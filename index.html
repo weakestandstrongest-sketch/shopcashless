@@ -14,7 +14,7 @@
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
-  <link rel="stylesheet" href="css/style.css?v=7">
+  <link rel="stylesheet" href="css/style.css?v=8">
 </head>
 <body>
   <header class="topbar">
@@ -54,13 +54,25 @@
   <main class="layout">
     <section class="map-wrap" aria-label="地図">
       <div id="map"></div>
+      <div id="crosshair" class="crosshair" hidden aria-hidden="true"></div>
       <div class="map-actions">
         <button type="button" id="locate" title="現在地">◎ 現在地</button>
+        <button type="button" id="add-shop">＋ お店を追加</button>
         <button type="button" id="search-here" hidden>このエリアで再検索</button>
       </div>
     </section>
 
     <section class="panel">
+      <form id="add-form" class="add-form" hidden>
+        <h2>地図に無いお店を追加</h2>
+        <p class="fine">地図を動かして、真ん中の十字（＋）をお店の場所に合わせてください。追加したお店はこの端末だけに保存され、検索結果に出るようになります。</p>
+        <label>店名 <input id="add-name" required placeholder="例：セブン-イレブン" autocomplete="off"></label>
+        <label>店舗名（任意） <input id="add-branch" placeholder="例：岐阜黒野店" autocomplete="off"></label>
+        <div class="add-actions">
+          <button type="submit" class="primary">この場所に追加</button>
+          <button type="button" id="add-cancel">やめる</button>
+        </div>
+      </form>
       <div id="status" class="status" role="status" aria-live="polite"></div>
       <div id="chain-card"></div>
       <ol id="results" class="results"></ol>
@@ -101,6 +113,7 @@
         <summary>ほかの支払い方法を記録する</summary>
         <div id="detail-unknown"></div>
       </details>
+      <button type="button" class="danger" id="detail-delete" hidden>このお店を削除</button>
       <p class="fine">
         「店舗データ」は <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> の情報、
         「チェーン共通の目安」は公開情報をもとにしたもので、店舗によって異なる場合があります。
@@ -110,6 +123,6 @@
   </dialog>
 
   <script src="vendor/leaflet/leaflet.js"></script>
-  <script type="module" src="js/app.js?v=7"></script>
+  <script type="module" src="js/app.js?v=8"></script>
 </body>
 </html>

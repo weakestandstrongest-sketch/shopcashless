@@ -1,7 +1,7 @@
 // DOM に依存しないロジック（テスト対象）。
 
-import { METHODS, METHOD_ID_BY_OSM_KEY } from './payments.js?v=7';
-import { CHAINS, CHAIN_BY_ID } from './chains.js?v=7';
+import { METHODS, METHOD_ID_BY_OSM_KEY } from './payments.js?v=8';
+import { CHAINS, CHAIN_BY_ID } from './chains.js?v=8';
 
 // 入力のゆれを吸収する：全角/半角・大文字小文字・ひらがな/カタカナ・空白や記号
 export function normalize(text) {
@@ -282,5 +282,39 @@ export function appleMapsUrl(shop) {
 }
 
 export function osmUrl(shop) {
+  if (!shop.osmType) return `https://www.openstreetmap.org/#map=19/${shop.lat}/${shop.lon}`;
   return `https://www.openstreetmap.org/${shop.osmType}/${shop.osmId}`;
+}
+
+// 店名からチェーンを判定する（自分で追加したお店用）
+export function chainIdForName(name) {
+  return CHAINS.find((c) => new RegExp(c.pattern, 'i').test(name))?.id ?? findChain(name)?.id ?? null;
+}
+
+// 自分で追加したお店 → アプリで扱う店舗オブジェクト
+export function customToShop(c) {
+  const branch = c.branch || '';
+  return {
+    key: c.key,
+    osmType: null,
+    osmId: null,
+    name: c.name,
+    branch,
+    displayName: branch ? `${c.name} ${branch}` : c.name,
+    noBranchName: false,
+    lat: c.lat,
+    lon: c.lon,
+    addr: '',
+    openingHours: '',
+    chainId: c.chainId ?? null,
+    osmPayments: {},
+    custom: true,
+  };
+}
+
+// 自分で追加したお店が、今回の検索に当てはまるか（支払い方法での検索は、あとで支払い方法で絞り込む）
+export function customMatchesQuery(shop, { chain, method, name }) {
+  if (method) return true;
+  if (chain) return shop.chainId === chain.id;
+  return normalize(shop.displayName).includes(normalize(name));
 }

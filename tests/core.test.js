@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  matchesChainKind, areaFromAddress, areaFromGsi, detectChainId, extractStations, findChain, findMethod, isGenericName, isStation,
+  chainIdForName, customMatchesQuery, customToShop, matchesChainKind, areaFromAddress, areaFromGsi, detectChainId, extractStations, findChain, findMethod, isGenericName, isStation,
   mergePayments, namePatternFor, nearestStation, normalize, parseOsmPayments, parseQuery, pickName,
   statusFor, toShop,
 } from '../js/core.js';
@@ -270,4 +270,21 @@ test('追加したチェーンも略称で見つかる', () => {
   for (const [q, id] of [['ガスト', 'gusto'], ['サイゼ', 'saizeriya'], ['ケンタ', 'kfc'], ['ココイチ', 'cocoichi'], ['はま寿司', 'hamasushi']]) {
     assert.equal(findChain(q)?.id, id, q);
   }
+});
+
+test('自分で追加したお店：チェーン判定と検索への当てはめ', () => {
+  assert.equal(chainIdForName('セブン-イレブン'), 'seven');
+  assert.equal(chainIdForName('セブンイレブン'), 'seven');
+  assert.equal(chainIdForName('ガスト'), 'gusto');
+  assert.equal(chainIdForName('喫茶ミドリ'), null);
+  const shop = customToShop({ key: 'custom/a', name: 'セブン-イレブン', branch: '岐阜黒野店', lat: 35.45, lon: 136.68, chainId: 'seven' });
+  assert.equal(shop.displayName, 'セブン-イレブン 岐阜黒野店');
+  assert.equal(shop.custom, true);
+  assert.equal(customMatchesQuery(shop, { chain: CHAIN_BY_ID.seven }), true);
+  assert.equal(customMatchesQuery(shop, { chain: CHAIN_BY_ID.lawson }), false);
+  assert.equal(customMatchesQuery(shop, { name: '黒野' }), true);
+  assert.equal(customMatchesQuery(shop, { name: 'ローソン' }), false);
+  assert.equal(customMatchesQuery(shop, { method: { id: 'paypay' } }), true);
+  // チェーンの目安がそのまま使える
+  assert.equal(statusFor(shop, 'nanaco', CHAIN_BY_ID), 'yes');
 });

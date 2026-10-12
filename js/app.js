@@ -1,15 +1,16 @@
-import { CATEGORIES, METHODS, METHOD_BY_ID, SOURCE_LABEL, STATUS } from './payments.js?v=7';
-import { CHAINS, CHAIN_BY_ID } from './chains.js?v=7';
+import { CATEGORIES, METHODS, METHOD_BY_ID, SOURCE_LABEL, STATUS } from './payments.js?v=8';
+import { CHAINS, CHAIN_BY_ID } from './chains.js?v=8';
 import {
-  appleMapsUrl, areaFromAddress, areaFromGsi, dedupeShops, distanceMeters, extractStations, formatDistance, googleMapsUrl,
+  appleMapsUrl, areaFromAddress, chainIdForName, customMatchesQuery, customToShop, areaFromGsi, dedupeShops, distanceMeters, extractStations, formatDistance, googleMapsUrl,
   isStation, mergePayments, nearestStation, osmUrl, parseQuery, statusFor, toShop,
-} from './core.js?v=7';
+} from './core.js?v=8';
 import {
   geocode, gsiReverse, nominatimSearch, reverseGeocode, searchByName, searchByPayment, searchChains, SearchError,
-} from './overpass.js?v=7';
+} from './overpass.js?v=8';
 import {
-  getAllChainMine, getAllMine, getChainMine, getMine, setChainMine, setMine,
-} from './storage.js?v=7';
+  addCustomShop, getAllChainMine, getAllMine, getChainMine, getCustomShops, getMine, removeCustomShop,
+  setChainMine, setMine,
+} from './storage.js?v=8';
 
 const DEFAULT_CENTER = { lat: 35.681236, lon: 139.767125 }; // 東京駅
 const MAX_RESULTS = 80;
@@ -30,6 +31,12 @@ const els = {
   results: $('#results'),
   intro: $('#intro'),
   missing: $('#missing'),
+  addShop: $('#add-shop'),
+  addForm: $('#add-form'),
+  addName: $('#add-name'),
+  addBranch: $('#add-branch'),
+  addCancel: $('#add-cancel'),
+  crosshair: $('#crosshair'),
   locate: $('#locate'),
   searchHere: $('#search-here'),
   detail: $('#detail'),
@@ -41,6 +48,7 @@ const els = {
   detailUnknown: $('#detail-unknown'),
   detailMore: $('#detail-more'),
   detailClose: $('#detail-close'),
+  detailDelete: $('#detail-delete'),
 };
 
 const state = {
@@ -211,6 +219,10 @@ async function runSearch(raw, { preferMap = false, center: fixedCenter = null } 
     const stations = extractStations(elements);
     let shops = dedupeShops(elements.filter((e) => !isStation(e)).map((e) => toShop(e, method ? null : chain)))
       .filter((s) => distanceMeters(center, s) <= radius * 1.05); // 建物の中心が範囲外の場合を除く
+    // 自分で追加したお店も加える
+    const customs = getCustomShops().map(customToShop)
+      .filter((s) => distanceMeters(center, s) <= radius && customMatchesQuery(s, { chain, method, name }));
+    shops = [...customs, ...shops];
     if (method) {
       const mineAll = getAllMine();
       const mineChains = getAllChainMine();
@@ -462,6 +474,7 @@ function renderResults() {
     if (merged.credit) badges = badge(METHOD_BY_ID.credit, merged.credit.status) + badges;
     if (!badges) badges = '<span class="badge unknown">支払い方法の情報なし — タップして記録できます</span>';
     const sources = [
+      s.custom ? '<span class="src src-mine">自分で追加</span>' : '',
       hasMine ? '<span class="src src-mine">自分の記録あり</span>' : '',
       hasOsm ? '<span class="src src-osm">店舗データあり</span>' : '',
     ].join(' ');
@@ -536,6 +549,9 @@ function renderDetail(shop) {
     <a href="${esc(osmUrl(shop))}" target="_blank" rel="noopener">OpenStreetMap</a>`;
 
   const notes = [];
+  if (shop.custom) {
+    notes.push('自分で追加したお店です（この端末だけに保存）。「OpenStreetMap」から地図データに登録すると、ほかの人の地図アプリにも表示されるようになります。');
+  }
   if (shop.noBranchName) {
     notes.push('地図データにこの店舗の正式な店名（○○店）が登録されていません。「Google マップで見る」を開くと店名を確認できます。');
   }
@@ -562,6 +578,7 @@ function renderDetail(shop) {
     return `<div class="cat"><h3>${esc(cat.label)}</h3>${items.map(row).join('')}</div>`;
   }).join('');
   els.detailMore.open = Object.keys(merged).length === 0;
+  els.detailDelete.hidden = !shop.custom;
   els.detail.dataset.key = shop.key;
 }
 
@@ -588,6 +605,55 @@ els.detail.addEventListener('click', (e) => {
 });
 
 els.detailClose.addEventListener('click', () => els.detail.close());
+
+els.detailDelete.addEventListener('click', () => {
+  const key = els.detail.dataset.key;
+  const shop = state.shops.find((s) => s.key === key);
+  if (!shop?.custom || !window.confirm(`「${shop.displayName}」を削除しますか？`)) return;
+  removeCustomShop(key);
+  els.detail.close();
+  state.shops = state.shops.filter((s) => s.key !== key);
+  renderResults();
+  renderMarkers();
+});
+
+// ---------- 地図に無いお店を追加 ----------
+function setAddMode(on) {
+  els.addForm.hidden = !on;
+  els.crosshair.hidden = !on;
+  els.addShop.hidden = on;
+  if (on) {
+    els.intro.hidden = true;
+    els.addName.value = state.lastParsed?.chain?.name ?? '';
+    els.addBranch.value = '';
+    els.addForm.scrollIntoView({ block: 'nearest' });
+  }
+}
+
+els.addShop.addEventListener('click', () => setAddMode(true));
+els.addCancel.addEventListener('click', () => setAddMode(false));
+
+els.addForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const name = els.addName.value.trim();
+  if (!name) return;
+  const c = map.getCenter();
+  const added = addCustomShop({
+    name,
+    branch: els.addBranch.value.trim(),
+    lat: Number(c.lat.toFixed(6)),
+    lon: Number(c.lng.toFixed(6)),
+    chainId: chainIdForName(name),
+  });
+  setAddMode(false);
+  if (!added) {
+    setStatus('保存できませんでした（プライベートブラウズでは保存できないことがあります）', { error: true });
+    return;
+  }
+  // 検索中なら同じ条件で探し直して、追加したお店をリストに出す。まだなら、そのお店の名前で探す
+  if (state.lastQuery && state.searchCenter) runSearch(state.lastQuery, { center: state.searchCenter });
+  else runSearch(name, { preferMap: true });
+});
 
 // ---------- イベント ----------
 els.form.addEventListener('submit', (e) => {

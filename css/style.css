@@ -389,3 +389,59 @@ dialog#detail::backdrop { background: rgba(0, 0, 0, .35); }
   .map-wrap { position: sticky; top: var(--header-h, 140px); height: calc(100vh - var(--header-h, 140px)); }
   #map { height: 100%; }
 }
+
+/* 地図に無いお店を追加 */
+.crosshair {
+  position: absolute;
+  z-index: 450;
+  left: 50%;
+  top: 50%;
+  width: 36px;
+  height: 36px;
+  margin: -18px 0 0 -18px;
+  pointer-events: none;
+}
+.crosshair::before, .crosshair::after {
+  content: '';
+  position: absolute;
+  background: #e0532b;
+  box-shadow: 0 0 0 1px #fff;
+}
+.crosshair::before { left: 17px; top: 0; width: 2px; height: 36px; }
+.crosshair::after { top: 17px; left: 0; height: 2px; width: 36px; }
+.add-form {
+  background: var(--surface);
+  border: 2px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  margin-bottom: 10px;
+}
+.add-form h2 { font-size: 16px; margin: 0; }
+.add-form label { display: block; font-size: 13px; color: var(--muted); margin-top: 8px; }
+.add-form input {
+  display: block;
+  width: 100%;
+  margin-top: 2px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  font-size: 16px;
+}
+.add-actions { display: flex; gap: 8px; margin-top: 10px; }
+.add-actions button {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: 10px;
+  padding: 8px 14px;
+}
+.add-actions button.primary { background: var(--accent); color: var(--accent-text); border-color: transparent; font-weight: 600; }
+.danger {
+  margin-top: 12px;
+  border: 1px solid var(--no);
+  color: var(--no);
+  background: var(--surface);
+  border-radius: 10px;
+  padding: 6px 12px;
+  font-size: 13px;
+}

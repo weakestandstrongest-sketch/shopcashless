@@ -6,8 +6,8 @@
 // - 正規表現を使うのは、チェーン以外の店名で探すときだけ
 // - 店舗かどうか（shop / amenity …）の判定はサーバーではなく、受け取ってから行う
 
-import { METHOD_BY_ID } from './payments.js?v=7';
-import { namePatternFor } from './core.js?v=7';
+import { METHOD_BY_ID } from './payments.js?v=8';
+import { namePatternFor } from './core.js?v=8';
 
 const OVERPASS_ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',

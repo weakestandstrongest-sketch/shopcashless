@@ -74,3 +74,37 @@ export function setChainMine(chainId, methodId, status) {
     return false;
   }
 }
+
+// 地図データに無いお店を、自分で追加したもの
+// 形式: [{ key: 'custom/…', name, branch, lat, lon, chainId, createdAt }]
+const CUSTOM_KEY = 'shopcashless:custom-shops:v1';
+
+export function getCustomShops() {
+  try {
+    const list = JSON.parse(localStorage.getItem(CUSTOM_KEY) || '[]');
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeCustomShops(list) {
+  try {
+    localStorage.setItem(CUSTOM_KEY, JSON.stringify(list));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function addCustomShop({ name, branch, lat, lon, chainId }) {
+  const shop = {
+    key: `custom/${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+    name, branch, lat, lon, chainId, createdAt: new Date().toISOString(),
+  };
+  return writeCustomShops([...getCustomShops(), shop]) ? shop : null;
+}
+
+export function removeCustomShop(key) {
+  return writeCustomShops(getCustomShops().filter((s) => s.key !== key));
+}
