@@ -1,74 +1,122 @@
 // OpenStreetMap のデータを取得する（APIキー不要）。
-// Overpass API: 店舗の検索 / Nominatim: 地名 → 座標
+// Overpass API: 店舗の検索 / 国土地理院・Nominatim: 地名 ⇔ 座標
+//
+// Overpass は公開サーバーなので、重い問い合わせは時間切れになりやすい。
+// - チェーン店は brand:wikidata・店名の「完全一致」で探す（索引が効くので速い）
+// - 正規表現を使うのは、チェーン以外の店名で探すときだけ
+// - 店舗かどうか（shop / amenity …）の判定はサーバーではなく、受け取ってから行う
 
-import { METHOD_BY_ID } from './payments.js?v=3';
-import { namePatternFor } from './core.js?v=3';
+import { METHOD_BY_ID } from './payments.js?v=4';
+import { namePatternFor } from './core.js?v=4';
 
 const OVERPASS_ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',
-  'https://overpass.kumi.systems/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter',
   'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
 ];
+const ATTEMPT_TIMEOUT_MS = 20000;
 
-const PLACE = '[~"^(shop|amenity|tourism|leisure|craft|office|healthcare)$"~"."]';
+// Overpass の文字列リテラル用に \ と " をエスケープ
+const q = (text) => String(text).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 
 // 見つかった店舗の近く（1.2km以内）の駅もいっしょに取得する。店舗の場所の目印にする
 function wrap(statements, limit) {
-  return `[out:json][timeout:40];
+  return `[out:json][timeout:25];
 (
-${statements}
+${statements.join('\n')}
 )->.shops;
 .shops out body center ${limit};
-nwr(around.shops:1200)["railway"="station"]["name"];
-out body center 400;`;
+node(around.shops:1200)["railway"="station"]["name"];
+out body 300;`;
 }
 
-// 名前・ブランドで店舗を探すクエリ
+// チェーン店を探すクエリ（複数チェーンをまとめて探せる）
+export function buildChainQuery(chains, { lat, lon }, radius, limit = 400) {
+  const around = `(around:${radius},${lat},${lon})`;
+  const lines = [];
+  for (const c of chains) {
+    for (const id of c.osm?.wikidata ?? []) lines.push(`  nwr["brand:wikidata"="${q(id)}"]${around};`);
+    for (const n of c.osm?.names ?? []) {
+      lines.push(`  nwr["name"="${q(n)}"]${around};`);
+      lines.push(`  nwr["brand"="${q(n)}"]${around};`);
+    }
+  }
+  return wrap(lines, limit);
+}
+
+// チェーン以外の店名で探すクエリ（部分一致）
 export function buildNameQuery(pattern, { lat, lon }, radius, limit = 400) {
   const around = `(around:${radius},${lat},${lon})`;
-  // Overpass の文字列リテラル用に \ と " をエスケープ
-  const p = pattern.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const p = q(pattern);
   return wrap([
-    `  nwr["name"~"${p}",i]${PLACE}${around};`,
-    `  nwr["name:ja"~"${p}",i]${PLACE}${around};`,
-    `  nwr["brand"~"${p}",i]${PLACE}${around};`,
-  ].join('\n'), limit);
+    `  nwr${around}["name"~"${p}",i];`,
+    `  nwr${around}["name:ja"~"${p}",i];`,
+    `  nwr${around}["brand"~"${p}",i];`,
+  ], limit);
 }
 
 // 指定の支払い方法タグが付いた店舗を探すクエリ（例：payment:paypay=yes）
 export function buildPaymentQuery(methodId, { lat, lon }, radius, limit = 400) {
   const keys = METHOD_BY_ID[methodId]?.osm ?? [];
   const around = `(around:${radius},${lat},${lon})`;
-  return wrap(keys.map((k) => `  nwr["payment:${k}"~"^(yes|only)$"]${around};`).join('\n'), limit);
+  return wrap(keys.flatMap((k) => [
+    `  nwr["payment:${k}"="yes"]${around};`,
+    `  nwr["payment:${k}"="only"]${around};`,
+  ]), limit);
 }
 
-async function postOverpass(query, signal) {
-  let lastError;
-  for (const url of OVERPASS_ENDPOINTS) {
+export class SearchError extends Error {
+  constructor(kind, message) {
+    super(message);
+    this.kind = kind; // 'busy'（混雑・時間切れ） | 'offline'（通信できない）
+  }
+}
+
+async function postOverpass(query, signal, onRetry) {
+  let busy = false;
+  for (const [i, url] of OVERPASS_ENDPOINTS.entries()) {
+    if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
+    if (i > 0) onRetry?.(i);
+    // 1 台あたり最大 20 秒。応答がなければ次のサーバーへ
+    const attempt = new AbortController();
+    const timer = setTimeout(() => attempt.abort(), ATTEMPT_TIMEOUT_MS);
+    const stop = () => attempt.abort();
+    signal?.addEventListener('abort', stop);
     try {
-      const res = await fetch(url, {
-        method: 'POST',
-        body: new URLSearchParams({ data: query }),
-        signal,
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const res = await fetch(url, { method: 'POST', body: new URLSearchParams({ data: query }), signal: attempt.signal });
+      if (!res.ok) {
+        busy = true; // 429（混雑）・504（時間切れ）など
+        continue;
+      }
       const json = await res.json();
+      if (json.remark && /timed out|out of memory/i.test(json.remark) && !json.elements?.length) {
+        busy = true;
+        continue;
+      }
       return json.elements ?? [];
     } catch (e) {
-      if (e.name === 'AbortError') throw e;
-      lastError = e;
+      if (signal?.aborted) throw e; // 新しい検索が始まった
+      if (attempt.signal.aborted) busy = true; // 20 秒で応答なし
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', stop);
     }
   }
-  throw lastError ?? new Error('Overpass に接続できませんでした');
+  throw busy
+    ? new SearchError('busy', '地図データのサーバーが混み合っています。少し待ってからもう一度検索するか、範囲を狭めてお試しください')
+    : new SearchError('offline', '地図データのサーバーに接続できませんでした。通信状態を確認して、もう一度お試しください');
 }
 
-export function searchByName(nameOrPattern, center, radius, { isPattern = false, signal } = {}) {
-  const pattern = isPattern ? nameOrPattern : namePatternFor(nameOrPattern);
-  return postOverpass(buildNameQuery(pattern, center, radius), signal);
+export function searchChains(chains, center, radius, { signal, onRetry } = {}) {
+  return postOverpass(buildChainQuery(chains, center, radius), signal, onRetry);
 }
 
-export function searchByPayment(methodId, center, radius, { signal } = {}) {
-  return postOverpass(buildPaymentQuery(methodId, center, radius), signal);
+export function searchByName(name, center, radius, { signal, onRetry } = {}) {
+  return postOverpass(buildNameQuery(namePatternFor(name), center, radius), signal, onRetry);
+}
+
+export function searchByPayment(methodId, center, radius, { signal, onRetry } = {}) {
+  return postOverpass(buildPaymentQuery(methodId, center, radius), signal, onRetry);
 }
 
 // 地名 → 座標（日本国内に限定）

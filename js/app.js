@@ -1,11 +1,11 @@
-import { CATEGORIES, METHODS, METHOD_BY_ID, SOURCE_LABEL, STATUS } from './payments.js?v=3';
-import { CHAINS, CHAIN_BY_ID } from './chains.js?v=3';
+import { CATEGORIES, METHODS, METHOD_BY_ID, SOURCE_LABEL, STATUS } from './payments.js?v=4';
+import { CHAINS, CHAIN_BY_ID } from './chains.js?v=4';
 import {
   appleMapsUrl, areaFromAddress, areaFromGsi, dedupeShops, distanceMeters, extractStations, formatDistance, googleMapsUrl,
   isStation, mergePayments, nearestStation, osmUrl, parseQuery, statusFor, toShop,
-} from './core.js?v=3';
-import { geocode, gsiReverse, reverseGeocode, searchByName, searchByPayment } from './overpass.js?v=3';
-import { getAllMine, getMine, setMine } from './storage.js?v=3';
+} from './core.js?v=4';
+import { geocode, gsiReverse, reverseGeocode, searchByName, searchByPayment, searchChains } from './overpass.js?v=4';
+import { getAllMine, getMine, setMine } from './storage.js?v=4';
 
 const DEFAULT_CENTER = { lat: 35.681236, lon: 139.767125 }; // 東京駅
 const MAX_RESULTS = 80;
@@ -168,13 +168,21 @@ async function runSearch(raw, { preferMap = false, center: fixedCenter = null } 
     state.focusMethod = method?.id ?? null;
 
     const radius = getRadius();
+    const label = method ? `${method.name} が使えそうなお店` : `「${chain?.name ?? name}」`;
+    // 待っている間、経過秒数とサーバーの切り替えを表示する
+    const started = Date.now();
+    let retryNote = '';
+    const tick = () => setStatus(`${label}を探しています…（半径${formatDistance(radius)}・${Math.round((Date.now() - started) / 1000)}秒）${retryNote}`);
+    tick();
+    const ticker = setInterval(tick, 1000);
+    const opts = { signal, onRetry: () => { retryNote = ' 混雑のため別のサーバーで再試行中'; tick(); } };
     let elements = [];
-    if (method) {
-      setStatus(`${method.name} が使えそうなお店を探しています…（半径${formatDistance(radius)}）`);
-      elements = await findElementsForMethod(method, center, radius, signal);
-    } else {
-      setStatus(`「${chain?.name ?? name}」を探しています…（半径${formatDistance(radius)}）`);
-      elements = await searchByName(chain ? chain.pattern : name, center, radius, { isPattern: Boolean(chain), signal });
+    try {
+      if (method) elements = await findElementsForMethod(method, center, radius, opts);
+      else if (chain) elements = await searchChains([chain], center, radius, opts);
+      else elements = await searchByName(name, center, radius, opts);
+    } finally {
+      clearInterval(ticker);
     }
 
     const stations = extractStations(elements);
@@ -209,18 +217,17 @@ async function runSearch(raw, { preferMap = false, center: fixedCenter = null } 
   } catch (e) {
     if (e.name === 'AbortError') return;
     console.error(e);
-    setStatus(`${e.message || '検索に失敗しました'}。電波の良いところで、もう一度お試しください。`, { error: true });
+    setStatus(e.kind ? `${e.message}。` : `検索に失敗しました（${e.message}）。もう一度お試しください。`, { error: true });
   }
 }
 
-async function findElementsForMethod(method, center, radius, signal) {
-  // 1) 店舗データに支払い方法のタグがある店
-  const tagged = await searchByPayment(method.id, center, radius, { signal });
-  // 2) チェーン共通の目安で「使える」チェーンの店
+async function findElementsForMethod(method, center, radius, opts) {
+  // 1) 店舗データに支払い方法のタグがある店 と 2) チェーン共通の目安で「使える」チェーンの店 を同時に探す
   const chains = CHAINS.filter((c) => c.payments[method.id] === 'yes' || c.payments[method.id] === 'some');
-  if (!chains.length) return tagged;
-  const pattern = chains.map((c) => `(${c.pattern})`).join('|');
-  const chained = await searchByName(pattern, center, radius, { isPattern: true, signal });
+  const [tagged, chained] = await Promise.all([
+    searchByPayment(method.id, center, radius, opts),
+    chains.length ? searchChains(chains, center, radius, opts) : [],
+  ]);
   return [...tagged, ...chained];
 }
 

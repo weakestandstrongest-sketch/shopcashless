@@ -6,7 +6,7 @@ import {
   mergePayments, namePatternFor, nearestStation, normalize, parseOsmPayments, parseQuery, pickName,
   statusFor, toShop,
 } from '../js/core.js';
-import { buildNameQuery, buildPaymentQuery } from '../js/overpass.js';
+import { buildChainQuery, buildNameQuery, buildPaymentQuery } from '../js/overpass.js';
 import { CHAINS, CHAIN_BY_ID } from '../js/chains.js';
 import { METHOD_BY_ID } from '../js/payments.js';
 
@@ -204,4 +204,24 @@ test('areaFromGsi: 国土地理院の結果から町名を取り出す', () => {
   assert.equal(areaFromGsi({ muniCd: '13113', lv01Nm: '宇田川町' }), '宇田川町');
   assert.equal(areaFromGsi({ muniCd: '13113', lv01Nm: '－' }), '');
   assert.equal(areaFromGsi(null), '');
+});
+
+test('Overpass クエリ：チェーンは完全一致（速い）で探し、重い正規表現を使わない', () => {
+  const q = buildChainQuery([CHAIN_BY_ID.starbucks], { lat: 35, lon: 139 }, 2000);
+  assert.match(q, /\["brand:wikidata"="Q37158"\]\(around:2000,35,139\)/);
+  assert.match(q, /\["name"="スターバックス"\]/);
+  assert.match(q, /\["brand"="Starbucks"\]/);
+  assert.doesNotMatch(q, /~/); // 正規表現なし
+  const m = buildChainQuery([CHAIN_BY_ID.mcdonalds, CHAIN_BY_ID.lawson], { lat: 35, lon: 139 }, 1000);
+  assert.match(m, /"McDonald's"/);
+  assert.match(m, /Q11323850/); // ナチュラルローソン
+  // 支払い方法の検索も完全一致
+  assert.doesNotMatch(buildPaymentQuery('paypay', { lat: 35, lon: 139 }, 1000), /~/);
+});
+
+test('チェーンデータ：検索用の条件（osm）がそろっている', () => {
+  for (const c of CHAINS) {
+    assert.ok(c.osm?.wikidata?.every((id) => /^Q\d+$/.test(id)), `${c.id}: wikidata`);
+    assert.ok(c.osm?.names?.length, `${c.id}: names`);
+  }
 });

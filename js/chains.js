@@ -3,7 +3,9 @@
 // yes = 使える / some = 一部店舗のみ・情報が割れている / no = 使えない。載っていない方法は「不明」扱い。
 //
 // aliases: 略称・表記ゆれ（検索欄の入力と照合）
-// pattern: OpenStreetMap で店舗を探すときの name / brand に対する正規表現
+// pattern: 店名からチェーンを判定する正規表現
+// osm: OpenStreetMap で店舗を探すときに使う完全一致の条件（brand:wikidata と店名）。
+//      値は Name Suggestion Index（OSM のチェーン店データ）に合わせている
 // kinds: 同名の別施設（バス停「マクドナルド前」、百貨店の松屋など）を除くための OSM タグ条件
 
 const CREDIT_ALL = { credit: 'yes', visa: 'yes', mastercard: 'yes', jcb: 'yes', amex: 'yes', diners: 'yes' };
@@ -14,6 +16,7 @@ export const CHAINS = [
     name: 'マクドナルド',
     aliases: ['マクドナルド', 'マック', 'マクド', 'mcdonalds', 'mcdonald', 'mac', 'mcd'],
     pattern: 'マクドナルド|McDonald',
+    osm: { wikidata: ['Q38076'], names: ['マクドナルド', "McDonald's"] },
     kinds: { amenity: ['fast_food', 'restaurant', 'food_court'] },
     note: 'コード決済は一部店舗を除く全店で対応（2023年10月発表）。モバイルオーダーでは交通系ICは使えません。',
     payments: {
@@ -26,6 +29,7 @@ export const CHAINS = [
     name: 'スターバックス',
     aliases: ['スターバックス', 'スタバ', 'スターバックスコーヒー', 'starbucks', 'sbux'],
     pattern: 'スターバックス|Starbucks',
+    osm: { wikidata: ['Q37158'], names: ['スターバックス', 'スターバックス コーヒー', 'スターバックスコーヒー', 'Starbucks', 'Starbucks Coffee'] },
     kinds: { amenity: ['cafe', 'fast_food', 'restaurant'] },
     note: '商業施設内の店舗などは施設の決済に従う場合があります。iD・QUICPay は店舗により異なります。',
     payments: {
@@ -38,6 +42,7 @@ export const CHAINS = [
     name: 'セブン-イレブン',
     aliases: ['セブンイレブン', 'セブン', 'セブイレ', '7-11', '711', '7eleven', 'seveneleven', 'seven'],
     pattern: 'セブン-?‐?イレブン|7-Eleven|Seven-Eleven|セブンイレブン',
+    osm: { wikidata: ['Q259340'], names: ['セブン-イレブン', 'セブンイレブン', '7-ELEVEN', '7-Eleven'] },
     kinds: { shop: ['convenience', 'supermarket'] },
     note: 'WAON は使えません（nanaco は使えます）。',
     payments: {
@@ -51,6 +56,7 @@ export const CHAINS = [
     name: 'ローソン',
     aliases: ['ローソン', 'lawson', 'ナチュラルローソン', 'ローソンストア100'],
     pattern: 'ローソン|LAWSON|Lawson',
+    osm: { wikidata: ['Q1557223', 'Q11323850', 'Q11350960'], names: ['ローソン', 'ナチュラルローソン', 'ローソンストア100', 'LAWSON'] },
     kinds: { shop: ['convenience', 'supermarket'] },
     note: 'nanaco は使えません。ナチュラルローソン・ローソンストア100も同じ名前で検索されます。',
     payments: {
@@ -64,6 +70,7 @@ export const CHAINS = [
     name: 'ファミリーマート',
     aliases: ['ファミリーマート', 'ファミマ', 'familymart', 'famima'],
     pattern: 'ファミリーマート|FamilyMart|Family Mart',
+    osm: { wikidata: ['Q11247682'], names: ['ファミリーマート', 'FamilyMart'] },
     kinds: { shop: ['convenience', 'supermarket'] },
     note: 'nanaco は使えません。独自のコード決済 FamiPay に対応。',
     payments: {
@@ -77,6 +84,7 @@ export const CHAINS = [
     name: 'すき家',
     aliases: ['すき家', 'すきや', 'スキヤ', 'sukiya'],
     pattern: 'すき家|Sukiya',
+    osm: { wikidata: ['Q6137375'], names: ['すき家'] },
     kinds: { amenity: ['fast_food', 'restaurant', 'food_court'] },
     note: '商業施設内の店舗は施設の決済に従う場合があります。',
     payments: {
@@ -89,6 +97,7 @@ export const CHAINS = [
     name: '松屋',
     aliases: ['松屋', 'まつや', 'マツヤ', 'matsuya'],
     pattern: '松屋|Matsuya',
+    osm: { wikidata: ['Q848773'], names: ['松屋'] },
     kinds: { amenity: ['fast_food', 'restaurant', 'food_court'] },
     note: '券売機で支払います。コード決済の種類が多いのが特徴です。',
     payments: {
