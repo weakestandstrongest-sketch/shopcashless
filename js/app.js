@@ -1,16 +1,17 @@
 import { CATEGORIES, METHODS, METHOD_BY_ID, SOURCE_LABEL, STATUS } from './payments.js';
 import { CHAINS, CHAIN_BY_ID } from './chains.js';
 import {
-  appleMapsUrl, dedupeShops, distanceMeters, formatDistance, googleMapsUrl,
-  mergePayments, osmUrl, parseQuery, statusFor, toShop,
+  appleMapsUrl, areaFromAddress, dedupeShops, distanceMeters, extractStations, formatDistance, googleMapsUrl,
+  isStation, mergePayments, nearestStation, osmUrl, parseQuery, statusFor, toShop,
 } from './core.js';
-import { geocode, searchByName, searchByPayment } from './overpass.js';
+import { geocode, reverseGeocode, searchByName, searchByPayment } from './overpass.js';
 import { getAllMine, getMine, setMine } from './storage.js';
 
 const DEFAULT_CENTER = { lat: 35.681236, lon: 139.767125 }; // 東京駅
-const NAME_RADII = [1500, 4000, 10000];
-const PAYMENT_RADII = [1000, 2500];
-const MAX_RESULTS = 60;
+const MAX_RESULTS = 80;
+const RADIUS_KEY = 'shopcashless:radius';
+const AREA_CACHE_KEY = 'shopcashless:areas:v1';
+const AREA_LOOKUPS = 12; // 店舗名が無い店舗のうち、住所（町名）を調べる件数
 const CARD_BRANDS = ['visa', 'mastercard', 'jcb', 'amex', 'diners'];
 const ORDERED_METHODS = CATEGORIES.flatMap((cat) => METHODS.filter((m) => m.cat === cat.id));
 
@@ -19,6 +20,7 @@ const els = {
   form: $('#search-form'),
   q: $('#q'),
   quick: $('#quick'),
+  radius: $('#radius'),
   status: $('#status'),
   chainCard: $('#chain-card'),
   results: $('#results'),
@@ -45,8 +47,15 @@ const state = {
   focusMethod: null,   // 支払い方法で探したときの方法ID
   activeKey: null,
   controller: null,
-  mapMovedSinceSearch: false,
 };
+
+// ---------- 検索範囲（半径） ----------
+try {
+  const saved = localStorage.getItem(RADIUS_KEY);
+  if (saved && [...els.radius.options].some((o) => o.value === saved)) els.radius.value = saved;
+} catch { /* 保存できない環境では既定値のまま */ }
+
+const getRadius = () => Number(els.radius.value);
 
 // ---------- 小さなユーティリティ ----------
 function esc(text) {
@@ -74,6 +83,7 @@ L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
 }).addTo(map);
 
 const markerLayer = L.layerGroup().addTo(map);
+let rangeCircle = null;
 const markers = new Map();
 let meMarker = null;
 
@@ -128,23 +138,24 @@ async function resolveCenter(area, { preferMap = false } = {}) {
   return { lat: c.lat, lon: c.lng };
 }
 
-async function runSearch(raw, { preferMap = false } = {}) {
+async function runSearch(raw, { preferMap = false, center: fixedCenter = null } = {}) {
   const query = String(raw ?? '').trim();
   if (!query) return;
   state.controller?.abort();
   state.controller = new AbortController();
   const { signal } = state.controller;
-  state.lastQuery = query;
   els.searchHere.hidden = true;
   els.intro.hidden = true;
 
-  let parsed = parseQuery(query);
+  // 範囲だけ変えて探し直すときは、前回の解釈（店名・地名の切り分け）をそのまま使う
+  let parsed = fixedCenter && state.lastParsed && state.lastQuery === query ? state.lastParsed : parseQuery(query);
+  state.lastQuery = query;
 
   renderChainCard(parsed.chain);
   els.results.innerHTML = '';
 
   try {
-    let center = await resolveCenter(parsed.area, { preferMap });
+    let center = fixedCenter ?? await resolveCenter(parsed.area, { preferMap });
     if (!center) {
       // 「とんかつ まい泉」のように、空白の後ろが地名ではなかった場合は全体を店名として探す
       parsed = { name: query, area: '', chain: null, method: null };
@@ -156,38 +167,45 @@ async function runSearch(raw, { preferMap = false } = {}) {
     state.searchCenter = center;
     state.focusMethod = method?.id ?? null;
 
-    let shops = [];
-    let radius = 0;
+    const radius = getRadius();
+    let elements = [];
     if (method) {
-      for (radius of PAYMENT_RADII) {
-        setStatus(`${method.name} が使えそうなお店を探しています…（半径${formatDistance(radius)}）`);
-        shops = await findShopsForMethod(method, center, radius, signal);
-        if (shops.length >= 5) break;
-      }
+      setStatus(`${method.name} が使えそうなお店を探しています…（半径${formatDistance(radius)}）`);
+      elements = await findElementsForMethod(method, center, radius, signal);
     } else {
-      const keyword = chain ? chain.pattern : name;
-      for (radius of NAME_RADII) {
-        setStatus(`「${chain?.name ?? name}」を探しています…（半径${formatDistance(radius)}）`);
-        const elements = await searchByName(keyword, center, radius, { isPattern: Boolean(chain), signal });
-        shops = dedupeShops(elements.map((e) => toShop(e, chain)));
-        if (shops.length > 0) break;
-      }
+      setStatus(`「${chain?.name ?? name}」を探しています…（半径${formatDistance(radius)}）`);
+      elements = await searchByName(chain ? chain.pattern : name, center, radius, { isPattern: Boolean(chain), signal });
     }
 
-    for (const s of shops) s.distance = distanceMeters(center, s);
+    const stations = extractStations(elements);
+    let shops = dedupeShops(elements.filter((e) => !isStation(e)).map((e) => toShop(e, method ? null : chain)))
+      .filter((s) => distanceMeters(center, s) <= radius * 1.05); // 建物の中心が範囲外の場合を除く
+    if (method) {
+      const mineAll = getAllMine();
+      shops = shops.filter((s) => ['yes', 'some'].includes(statusFor(s, method.id, CHAIN_BY_ID, mineAll)));
+    }
+
+    for (const s of shops) {
+      s.distance = distanceMeters(center, s);
+      s.station = nearestStation(s, stations);
+    }
     shops.sort((a, b) => a.distance - b.distance);
+    const total = shops.length;
     state.shops = shops.slice(0, MAX_RESULTS);
+    state.radius = radius;
 
     renderResults();
     renderMarkers();
     fitToResults(center);
 
     if (state.shops.length === 0) {
-      setStatus(`半径${formatDistance(radius)}以内に見つかりませんでした。地図を動かして「このエリアで再検索」するか、「${name} 渋谷」のように地名をつけてみてください。`);
+      setStatus(`半径${formatDistance(radius)}以内に見つかりませんでした。検索ボタン左の範囲を広げるか、「${name} 渋谷」のように地名をつけてみてください。`);
     } else {
       const what = method ? `${method.name} が使えそうなお店` : `「${chain?.name ?? name}」`;
-      setStatus(`${what}：${state.shops.length}件（近い順）`);
+      const more = total > state.shops.length ? `（近い順に${state.shops.length}件を表示）` : '（近い順）';
+      setStatus(`${what}：半径${formatDistance(radius)}以内に${total}件${more}`);
     }
+    lookupAreas(signal);
   } catch (e) {
     if (e.name === 'AbortError') return;
     console.error(e);
@@ -195,29 +213,81 @@ async function runSearch(raw, { preferMap = false } = {}) {
   }
 }
 
-async function findShopsForMethod(method, center, radius, signal) {
-  const mineAll = getAllMine();
+async function findElementsForMethod(method, center, radius, signal) {
   // 1) 店舗データに支払い方法のタグがある店
   const tagged = await searchByPayment(method.id, center, radius, { signal });
   // 2) チェーン共通の目安で「使える」チェーンの店
   const chains = CHAINS.filter((c) => c.payments[method.id] === 'yes' || c.payments[method.id] === 'some');
-  let chained = [];
-  if (chains.length) {
-    const pattern = chains.map((c) => `(${c.pattern})`).join('|');
-    chained = await searchByName(pattern, center, radius, { isPattern: true, signal });
+  if (!chains.length) return tagged;
+  const pattern = chains.map((c) => `(${c.pattern})`).join('|');
+  const chained = await searchByName(pattern, center, radius, { isPattern: true, signal });
+  return [...tagged, ...chained];
+}
+
+// 店舗名が登録されていない店舗は、町名を調べて「どこの店舗か」わかるようにする。
+// Nominatim の利用規約（1秒に1回まで）に合わせて順番に問い合わせ、結果は端末に保存して再利用する
+function readAreaCache() {
+  try { return JSON.parse(localStorage.getItem(AREA_CACHE_KEY) || '{}') || {}; } catch { return {}; }
+}
+
+async function lookupAreas(signal) {
+  const cache = readAreaCache();
+  const keyOf = (s) => `${s.lat.toFixed(4)},${s.lon.toFixed(4)}`;
+  const targets = state.shops.filter((s) => s.noBranchName && !s.addr).slice(0, AREA_LOOKUPS);
+  let changed = false;
+  for (const s of targets) {
+    if (cache[keyOf(s)] !== undefined) { s.area = cache[keyOf(s)]; changed = true; }
   }
-  return dedupeShops([...tagged, ...chained].map((e) => toShop(e)))
-    .filter((s) => {
-      const st = statusFor(s, method.id, CHAIN_BY_ID, mineAll);
-      return st === 'yes' || st === 'some';
-    });
+  if (changed) refreshList();
+  for (const s of targets) {
+    if (signal.aborted) return;
+    if (cache[keyOf(s)] !== undefined) continue;
+    try {
+      const address = await reverseGeocode(s, { signal });
+      s.area = areaFromAddress(address ?? {});
+      cache[keyOf(s)] = s.area;
+      try { localStorage.setItem(AREA_CACHE_KEY, JSON.stringify(cache)); } catch { /* 保存できなくても表示はする */ }
+      refreshList();
+    } catch (e) {
+      if (e.name === 'AbortError') return;
+      return; // 混雑などで失敗したら、駅からの距離だけで表示する
+    }
+    await new Promise((r) => setTimeout(r, 1100));
+  }
+}
+
+function refreshList() {
+  renderResults();
+  const key = els.detail.open ? els.detail.dataset.key : null;
+  const shop = key && state.shops.find((x) => x.key === key);
+  if (shop) {
+    const moreOpen = els.detailMore.open;
+    renderDetail(shop);
+    els.detailMore.open = moreOpen;
+  }
+}
+
+// 「渋谷駅 徒歩3分 ・ 渋谷区宇田川町」のような、店舗の場所の目印
+function whereText(s) {
+  return [
+    s.station ? `${s.station.name} 徒歩${s.station.walkMinutes}分` : '',
+    s.addr || s.area || '',
+  ].filter(Boolean).join(' ・ ');
 }
 
 function fitToResults(center) {
+  // 検索した範囲を円で表示し、近い店舗が見えるように地図を合わせる
+  if (rangeCircle) rangeCircle.remove();
+  rangeCircle = L.circle([center.lat, center.lon], {
+    radius: state.radius, color: '#0b7a5c', weight: 1.5, dashArray: '6 6', fillOpacity: 0.04, interactive: false,
+  }).addTo(map);
   const pts = state.shops.slice(0, 15).map((s) => [s.lat, s.lon]);
+  if (pts.length === 0) {
+    map.fitBounds(rangeCircle.getBounds(), { padding: [10, 10] });
+    return;
+  }
   pts.push([center.lat, center.lon]);
-  if (pts.length === 1) map.setView(pts[0], 15);
-  else map.fitBounds(pts, { padding: [30, 30], maxZoom: 17 });
+  map.fitBounds(pts, { padding: [30, 30], maxZoom: 17 });
 }
 
 // ---------- 描画 ----------
@@ -268,7 +338,8 @@ function renderResults() {
         <button type="button">
           <span class="r-name">${esc(s.displayName)}</span>
           <span class="r-dist">${formatDistance(s.distance)}</span>
-          <span class="r-meta">${s.addr ? esc(s.addr) + ' ' : ''}${sources}</span>
+          <span class="r-where">${esc(whereText(s))}</span>
+          ${sources.trim() ? `<span class="r-meta">${sources}</span>` : ''}
           <span class="r-badges">${badges}</span>
         </button>
       </li>`;
@@ -315,7 +386,7 @@ function renderDetail(shop) {
   els.detailTitle.textContent = shop.displayName;
   els.detailSub.textContent = [
     shop.distance != null ? `ここから ${formatDistance(shop.distance)}` : '',
-    shop.addr,
+    whereText(shop),
     shop.openingHours ? `営業時間: ${shop.openingHours}` : '',
   ].filter(Boolean).join(' ・ ');
 
@@ -324,11 +395,15 @@ function renderDetail(shop) {
     <a href="${esc(appleMapsUrl(shop))}" target="_blank" rel="noopener">Apple マップ</a>
     <a href="${esc(osmUrl(shop))}" target="_blank" rel="noopener">OpenStreetMap</a>`;
 
-  els.detailNote.innerHTML = chain?.note
-    ? `<div class="note"><b>${esc(chain.name)}：</b>${esc(chain.note)}</div>`
-    : (Object.keys(merged).length === 0
-      ? '<div class="note">この店舗の支払い方法の情報はまだありません。Google マップの店舗ページや店頭の表示で確認して、下の「ほかの支払い方法を記録する」から記録できます。</div>'
-      : '');
+  const notes = [];
+  if (shop.noBranchName) {
+    notes.push('地図データにこの店舗の正式な店名（○○店）が登録されていません。「Google マップで見る」を開くと店名を確認できます。');
+  }
+  if (chain?.note) notes.push(`<b>${esc(chain.name)}：</b>${esc(chain.note)}`);
+  else if (Object.keys(merged).length === 0) {
+    notes.push('この店舗の支払い方法の情報はまだありません。Google マップの店舗ページや店頭の表示で確認して、下の「ほかの支払い方法を記録する」から記録できます。');
+  }
+  els.detailNote.innerHTML = notes.map((n) => `<div class="note">${n}</div>`).join('');
 
   const row = (m) => {
     const info = merged[m.id];
@@ -390,6 +465,12 @@ els.form.addEventListener('submit', (e) => {
   e.preventDefault();
   els.q.blur();
   runSearch(els.q.value);
+});
+
+els.radius.addEventListener('change', () => {
+  try { localStorage.setItem(RADIUS_KEY, els.radius.value); } catch { /* 保存できなくても検索はできる */ }
+  // 検索済みなら、同じ場所・同じ条件で範囲だけ変えて探し直す
+  if (state.lastQuery) runSearch(state.lastQuery, { preferMap: false, center: state.searchCenter });
 });
 
 els.quick.addEventListener('click', (e) => {

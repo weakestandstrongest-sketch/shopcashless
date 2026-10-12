@@ -1,7 +1,7 @@
 // DOM に依存しないロジック（テスト対象）。
 
 import { METHODS, METHOD_ID_BY_OSM_KEY } from './payments.js';
-import { CHAINS } from './chains.js';
+import { CHAINS, CHAIN_BY_ID } from './chains.js';
 
 // 入力のゆれを吸収する：全角/半角・大文字小文字・ひらがな/カタカナ・空白や記号
 export function normalize(text) {
@@ -101,7 +101,7 @@ export function distanceMeters(a, b) {
 
 export function formatDistance(m) {
   if (m < 1000) return `${Math.round(m / 10) * 10}m`;
-  return `${(m / 1000).toFixed(m < 10000 ? 1 : 0)}km`;
+  return `${Number((m / 1000).toFixed(m < 10000 ? 1 : 0))}km`; // 2000 → 2km, 2500 → 2.5km
 }
 
 // Overpass の正規表現に埋め込めるようにエスケープ
@@ -118,6 +118,32 @@ export function namePatternFor(query) {
 
 const PLACE_KEYS = ['shop', 'amenity', 'tourism', 'leisure', 'craft', 'office', 'healthcare'];
 
+// 店名の候補（name:ja / name / official_name …）から、いちばん詳しいものを選ぶ。
+// 例：name=スターバックス, official_name=スターバックス コーヒー 渋谷TSUTAYA店 → 後者
+export function pickName(tags = {}) {
+  const candidates = [tags['name:ja'], tags.name, tags['official_name:ja'], tags.official_name]
+    .filter(Boolean)
+    .map((t) => String(t).trim());
+  if (!candidates.length) return tags['brand:ja'] || tags.brand || '名前のない店舗';
+  return candidates.reduce((best, c) => (normalize(c).length > normalize(best).length ? c : best));
+}
+
+// 店名がチェーン名だけ（「スターバックス」など）で、どの店舗か区別できないか
+export function isGenericName(name, tags = {}, chain = null) {
+  const generic = new Set(
+    [tags.brand, tags['brand:ja'], tags['brand:en'], chain?.name, ...(chain?.aliases ?? [])]
+      .filter(Boolean)
+      .map(normalize),
+  );
+  const n = normalize(name);
+  if (generic.has(n)) return true;
+  // 「スターバックスコーヒー」「マクドナルド McDonald's」のようにブランド表記の組み合わせだけの場合
+  const rest = [...generic].filter((g) => g.length >= 3).sort((a, b) => b.length - a.length)
+    .reduce((acc, g) => acc.split(g).join(''), n)
+    .replace(/コーヒー|coffee|ストア|store/g, '');
+  return rest.length === 0;
+}
+
 // Overpass の要素を、アプリで扱う店舗オブジェクトに変換する
 export function toShop(el, chain = null) {
   const tags = el.tags ?? {};
@@ -129,8 +155,10 @@ export function toShop(el, chain = null) {
     const ok = Object.entries(chain.kinds).some(([k, vals]) => vals.includes(tags[k]));
     if (!ok) return null;
   }
-  const name = tags['name:ja'] || tags.name || tags.brand || '名前のない店舗';
+  const name = pickName(tags);
   const branch = tags['branch:ja'] || tags.branch || '';
+  const displayName = branch && !normalize(name).includes(normalize(branch)) ? `${name} ${branch}` : name;
+  const chainId = chain?.id ?? detectChainId(tags);
   const addr = [
     tags['addr:province'], tags['addr:city'], tags['addr:quarter'], tags['addr:neighbourhood'],
     tags['addr:block_number'], tags['addr:housenumber'],
@@ -141,14 +169,63 @@ export function toShop(el, chain = null) {
     osmId: el.id,
     name,
     branch,
-    displayName: branch && !name.includes(branch) ? `${name} ${branch}` : name,
+    displayName,
+    // 店舗名が登録されていない（チェーン名だけ）の店舗
+    noBranchName: !branch && isGenericName(name, tags, chain ?? (chainId ? CHAIN_BY_ID[chainId] : null)),
     lat,
     lon,
     addr,
     openingHours: tags.opening_hours || '',
-    chainId: chain?.id ?? detectChainId(tags),
+    chainId,
     osmPayments: parseOsmPayments(tags),
   };
+}
+
+// Overpass の結果から駅を取り出す（店舗の場所の目印に使う）
+export function extractStations(elements = []) {
+  const seen = new Set();
+  const stations = [];
+  for (const el of elements) {
+    const t = el.tags ?? {};
+    if (t.railway !== 'station' && t.public_transport !== 'station') continue;
+    const lat = el.lat ?? el.center?.lat;
+    const lon = el.lon ?? el.center?.lon;
+    const name = t['name:ja'] || t.name;
+    if (lat == null || lon == null || !name) continue;
+    const key = `${name}@${lat.toFixed(3)},${lon.toFixed(3)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    stations.push({ name: name.endsWith('駅') ? name : `${name}駅`, lat, lon });
+  }
+  return stations;
+}
+
+export function isStation(el) {
+  const t = el.tags ?? {};
+  return t.railway === 'station' || t.public_transport === 'station';
+}
+
+// 最寄り駅（maxMeters 以内）。徒歩は不動産表示と同じ 80m = 1分
+export function nearestStation(point, stations, maxMeters = 1200) {
+  let best = null;
+  for (const st of stations) {
+    const d = distanceMeters(point, st);
+    if (d <= maxMeters && (!best || d < best.distance)) best = { name: st.name, distance: d };
+  }
+  if (!best) return null;
+  return { ...best, walkMinutes: Math.max(1, Math.ceil(best.distance / 80)) };
+}
+
+// Nominatim の逆ジオコーディング結果 → 「渋谷区宇田川町」のような町名
+export function areaFromAddress(address = {}) {
+  const parts = [
+    address.city || address.town || address.village,
+    address.city_district,
+    address.suburb,
+    address.quarter,
+    address.neighbourhood,
+  ].filter(Boolean);
+  return [...new Set(parts)].join('');
 }
 
 export function detectChainId(tags = {}) {

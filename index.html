@@ -28,6 +28,16 @@
     <form id="search-form" class="search" role="search" autocomplete="off">
       <input id="q" type="search" enterkeyhint="search"
              placeholder="店名・支払い方法（例：マック 渋谷 / PayPay）" aria-label="店名や支払い方法で検索">
+      <select id="radius" aria-label="検索する範囲（半径）">
+        <option value="300">300m</option>
+        <option value="500">500m</option>
+        <option value="1000">1km</option>
+        <option value="2000" selected>2km</option>
+        <option value="3000">3km</option>
+        <option value="5000">5km</option>
+        <option value="10000">10km</option>
+        <option value="20000">20km</option>
+      </select>
       <button type="submit">検索</button>
     </form>
     <div class="chips" id="quick">
@@ -58,6 +68,7 @@
         <ul>
           <li><b>店名で探す</b>：「マック」「スタバ」など略称でもOK。近くの店舗が地図とリストに出ます。</li>
           <li><b>場所を指定</b>：「マック 渋谷」のように地名をつけると、その周辺の店舗を探します。</li>
+          <li><b>範囲を選ぶ</b>：検索ボタンの左で、探す範囲（半径300m〜20km）を選べます。</li>
           <li><b>支払い方法で探す</b>：「PayPay」「交通系IC」と入れると、それが使えそうなお店を探します。</li>
           <li><b>店舗ごとに確認</b>：店舗をタップすると支払い方法の一覧。実際に使えた／使えなかったを記録できます。</li>
         </ul>

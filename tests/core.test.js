@@ -2,8 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  detectChainId, findChain, findMethod, mergePayments, namePatternFor, normalize,
-  parseOsmPayments, parseQuery, statusFor, toShop,
+  areaFromAddress, detectChainId, extractStations, findChain, findMethod, isGenericName, isStation,
+  mergePayments, namePatternFor, nearestStation, normalize, parseOsmPayments, parseQuery, pickName,
+  statusFor, toShop,
 } from '../js/core.js';
 import { buildNameQuery, buildPaymentQuery } from '../js/overpass.js';
 import { CHAINS, CHAIN_BY_ID } from '../js/chains.js';
@@ -143,4 +144,58 @@ test('Overpass クエリ：名前と支払い方法の検索', () => {
   const p = buildPaymentQuery('transit', { lat: 1, lon: 2 }, 1000);
   assert.match(p, /payment:suica/);
   assert.match(p, /payment:pasmo/);
+});
+
+test('pickName: いちばん詳しい店名を使う', () => {
+  assert.equal(pickName({ name: 'スターバックス', official_name: 'スターバックス コーヒー 渋谷TSUTAYA店' }), 'スターバックス コーヒー 渋谷TSUTAYA店');
+  assert.equal(pickName({ name: 'マクドナルド 渋谷店', 'name:ja': 'マクドナルド' }), 'マクドナルド 渋谷店');
+  assert.equal(pickName({ brand: 'ローソン' }), 'ローソン');
+});
+
+test('toShop: 店舗名が登録されていない店舗を見分ける', () => {
+  const sb = CHAIN_BY_ID.starbucks;
+  const generic = toShop({ type: 'node', id: 10, lat: 35, lon: 139, tags: { name: 'スターバックス', brand: 'スターバックス', amenity: 'cafe' } }, sb);
+  assert.equal(generic.noBranchName, true);
+  const coffee = toShop({ type: 'node', id: 11, lat: 35, lon: 139, tags: { name: 'スターバックス コーヒー', amenity: 'cafe' } }, sb);
+  assert.equal(coffee.noBranchName, true);
+  const named = toShop({ type: 'node', id: 12, lat: 35, lon: 139, tags: { name: 'スターバックス コーヒー 渋谷TSUTAYA店', amenity: 'cafe' } }, sb);
+  assert.equal(named.noBranchName, false);
+  const branch = toShop({ type: 'node', id: 13, lat: 35, lon: 139, tags: { name: 'スターバックス', branch: '渋谷TSUTAYA店', amenity: 'cafe' } }, sb);
+  assert.equal(branch.noBranchName, false);
+  assert.equal(branch.displayName, 'スターバックス 渋谷TSUTAYA店');
+  // チェーン指定なしでも、ブランドから判定できる
+  const detected = toShop({ type: 'node', id: 14, lat: 35, lon: 139, tags: { name: 'Starbucks', brand: 'Starbucks', amenity: 'cafe' } });
+  assert.equal(detected.noBranchName, true);
+  assert.equal(isGenericName('マクドナルド 渋谷店', {}, CHAIN_BY_ID.mcdonalds), false);
+});
+
+test('駅：最寄り駅と徒歩分数', () => {
+  const elements = [
+    { type: 'node', id: 1, lat: 35.6580, lon: 139.7016, tags: { name: '渋谷', railway: 'station' } },
+    { type: 'node', id: 2, lat: 35.6580, lon: 139.7016, tags: { name: '渋谷', railway: 'station', operator: '別会社' } },
+    { type: 'way', id: 3, center: { lat: 35.6702, lon: 139.7027 }, tags: { name: '原宿駅', railway: 'station' } },
+    { type: 'node', id: 4, lat: 35.66, lon: 139.70, tags: { name: 'カフェ', amenity: 'cafe' } },
+  ];
+  const stations = extractStations(elements);
+  assert.deepEqual(stations.map((s) => s.name), ['渋谷駅', '原宿駅']);
+  assert.equal(isStation(elements[0]), true);
+  assert.equal(isStation(elements[3]), false);
+  const near = nearestStation({ lat: 35.6595, lon: 139.7005 }, stations);
+  assert.equal(near.name, '渋谷駅');
+  assert.equal(near.walkMinutes, Math.ceil(near.distance / 80));
+  assert.equal(nearestStation({ lat: 36, lon: 140 }, stations), null);
+});
+
+test('areaFromAddress: 逆ジオコーディング結果から町名を作る', () => {
+  assert.equal(areaFromAddress({ city: '渋谷区', quarter: '宇田川町', country: '日本' }), '渋谷区宇田川町');
+  assert.equal(areaFromAddress({ town: '軽井沢町', suburb: '軽井沢', neighbourhood: '軽井沢' }), '軽井沢町軽井沢');
+  assert.equal(areaFromAddress({}), '');
+});
+
+test('Overpass クエリ：駅もいっしょに取得し、座標つきで出力する', () => {
+  const q = buildNameQuery('スターバックス', { lat: 35, lon: 139 }, 2000);
+  assert.match(q, /->\.shops;/);
+  assert.match(q, /\.shops out body center/);
+  assert.match(q, /around\.shops:1200\)\["railway"="station"\]/);
+  assert.doesNotMatch(q, /out center tags/);
 });
