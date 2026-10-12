@@ -42,6 +42,11 @@ export const METHODS = [
   { id: 'rakutenpay', name: '楽天ペイ', cat: 'code', osm: ['rakuten_pay'], words: ['楽天ペイ', '楽天pay', 'rakutenpay'] },
   { id: 'aupay', name: 'au PAY', cat: 'code', osm: ['au_pay', 'aupay'], words: ['aupay', 'auペイ'] },
   { id: 'merpay', name: 'メルペイ', cat: 'code', osm: ['merpay'], words: ['メルペイ', 'merpay'] },
+  {
+    id: 'smartcode', name: 'Smart Code', cat: 'code', osm: ['smart_code', 'smartcode'],
+    words: ['smartcode', 'スマートコード', 'スマコ'],
+    hint: 'JCB の共通コード決済。マークのある店で メルペイ・au PAY・ANA Pay・ゆうちょPay などが使えます',
+  },
   { id: 'famipay', name: 'FamiPay', cat: 'code', osm: ['famipay'], words: ['famipay', 'ファミペイ'] },
   { id: 'alipay', name: 'Alipay', cat: 'code', osm: ['alipay'], words: ['alipay', 'アリペイ'] },
   { id: 'wechat', name: 'WeChat Pay', cat: 'code', osm: ['wechat', 'wechat_pay'], words: ['wechatpay', 'wechat', 'ウィーチャットペイ'] },

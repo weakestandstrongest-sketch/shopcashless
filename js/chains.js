@@ -41,14 +41,14 @@ export const CHAINS = [
     id: 'seven',
     name: 'セブン-イレブン',
     aliases: ['セブンイレブン', 'セブン', 'セブイレ', '7-11', '711', '7eleven', 'seveneleven', 'seven'],
-    pattern: 'セブン-?‐?イレブン|7-Eleven|Seven-Eleven|セブンイレブン',
+    pattern: 'セブン.?イレブン|7.?Eleven|Seven.?Eleven',
     osm: { wikidata: ['Q259340'], names: ['セブン-イレブン', 'セブンイレブン', '7-ELEVEN', '7-Eleven'] },
     kinds: { shop: ['convenience', 'supermarket'] },
     note: 'WAON は使えません（nanaco は使えます）。',
     payments: {
       cash: 'yes', ...CREDIT_ALL, contactless: 'yes', transit: 'yes', id: 'yes', quicpay: 'yes',
       edy: 'yes', nanaco: 'yes', waon: 'no',
-      paypay: 'yes', dbarai: 'yes', rakutenpay: 'yes', aupay: 'yes', merpay: 'yes',
+      paypay: 'yes', dbarai: 'yes', rakutenpay: 'yes', aupay: 'yes', merpay: 'yes', smartcode: 'yes',
     },
   },
   {
@@ -62,7 +62,7 @@ export const CHAINS = [
     payments: {
       cash: 'yes', ...CREDIT_ALL, contactless: 'yes', transit: 'yes', id: 'yes', quicpay: 'yes',
       edy: 'yes', waon: 'yes', nanaco: 'no',
-      paypay: 'yes', dbarai: 'yes', rakutenpay: 'yes', aupay: 'yes', merpay: 'yes',
+      paypay: 'yes', dbarai: 'yes', rakutenpay: 'yes', aupay: 'yes', merpay: 'yes', smartcode: 'yes',
     },
   },
   {
@@ -76,7 +76,7 @@ export const CHAINS = [
     payments: {
       cash: 'yes', ...CREDIT_ALL, contactless: 'yes', transit: 'yes', id: 'yes', quicpay: 'yes',
       edy: 'yes', waon: 'yes', nanaco: 'no',
-      famipay: 'yes', paypay: 'yes', dbarai: 'yes', rakutenpay: 'yes', aupay: 'yes', merpay: 'yes',
+      famipay: 'yes', paypay: 'yes', dbarai: 'yes', rakutenpay: 'yes', aupay: 'yes', merpay: 'yes', smartcode: 'yes',
     },
   },
   {
@@ -86,10 +86,10 @@ export const CHAINS = [
     pattern: 'すき家|Sukiya',
     osm: { wikidata: ['Q6137375'], names: ['すき家'] },
     kinds: { amenity: ['fast_food', 'restaurant', 'food_court'] },
-    note: '商業施設内の店舗は施設の決済に従う場合があります。',
+    note: '商業施設内の店舗は施設の決済に従う場合があります。Smart Code は一部使えない店舗があります。',
     payments: {
       cash: 'yes', credit: 'yes', transit: 'yes', id: 'yes', quicpay: 'yes', edy: 'yes',
-      paypay: 'yes', dbarai: 'yes', rakutenpay: 'some', aupay: 'some',
+      paypay: 'yes', dbarai: 'yes', rakutenpay: 'some', aupay: 'some', smartcode: 'yes',
     },
   },
   {
@@ -99,10 +99,10 @@ export const CHAINS = [
     pattern: '松屋|Matsuya',
     osm: { wikidata: ['Q848773'], names: ['松屋'] },
     kinds: { amenity: ['fast_food', 'restaurant', 'food_court'] },
-    note: '券売機で支払います。コード決済の種類が多いのが特徴です。',
+    note: '券売機で支払います。コード決済の種類が多いのが特徴です（Smart Code は券売機・セルフレジのある店舗）。',
     payments: {
       cash: 'yes', credit: 'some', transit: 'yes',
-      paypay: 'yes', dbarai: 'yes', rakutenpay: 'yes', aupay: 'yes', merpay: 'yes',
+      paypay: 'yes', dbarai: 'yes', rakutenpay: 'yes', aupay: 'yes', merpay: 'yes', smartcode: 'yes',
     },
   },
 ];

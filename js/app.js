@@ -1,13 +1,13 @@
-import { CATEGORIES, METHODS, METHOD_BY_ID, SOURCE_LABEL, STATUS } from './payments.js?v=5';
-import { CHAINS, CHAIN_BY_ID } from './chains.js?v=5';
+import { CATEGORIES, METHODS, METHOD_BY_ID, SOURCE_LABEL, STATUS } from './payments.js?v=6';
+import { CHAINS, CHAIN_BY_ID } from './chains.js?v=6';
 import {
   appleMapsUrl, areaFromAddress, areaFromGsi, dedupeShops, distanceMeters, extractStations, formatDistance, googleMapsUrl,
   isStation, mergePayments, nearestStation, osmUrl, parseQuery, statusFor, toShop,
-} from './core.js?v=5';
+} from './core.js?v=6';
 import {
   geocode, gsiReverse, nominatimSearch, reverseGeocode, searchByName, searchByPayment, searchChains, SearchError,
-} from './overpass.js?v=5';
-import { getAllMine, getMine, setMine } from './storage.js?v=5';
+} from './overpass.js?v=6';
+import { getAllMine, getMine, setMine } from './storage.js?v=6';
 
 const DEFAULT_CENTER = { lat: 35.681236, lon: 139.767125 }; // 東京駅
 const MAX_RESULTS = 80;
@@ -474,6 +474,7 @@ function renderDetail(shop) {
     return `
       <div class="method-row" data-method="${m.id}">
         <div class="m-left">${badge(m, info?.status, { focus: m.id === state.focusMethod })} ${src}</div>
+        ${m.hint ? `<div class="m-hint">${esc(m.hint)}</div>` : ''}
         <div class="m-vote">
           <button type="button" class="v-yes" data-vote="yes" aria-pressed="${mine[m.id] === 'yes'}" aria-label="${esc(m.name)}が使えた">使えた</button>
           <button type="button" class="v-no" data-vote="no" aria-pressed="${mine[m.id] === 'no'}" aria-label="${esc(m.name)}は使えなかった">使えず</button>

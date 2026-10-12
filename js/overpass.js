@@ -6,8 +6,8 @@
 // - 正規表現を使うのは、チェーン以外の店名で探すときだけ
 // - 店舗かどうか（shop / amenity …）の判定はサーバーではなく、受け取ってから行う
 
-import { METHOD_BY_ID } from './payments.js?v=5';
-import { namePatternFor } from './core.js?v=5';
+import { METHOD_BY_ID } from './payments.js?v=6';
+import { namePatternFor } from './core.js?v=6';
 
 const OVERPASS_ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',
@@ -31,15 +31,29 @@ out body 300;`;
 }
 
 // チェーン店を探すクエリ（複数チェーンをまとめて探せる）
+// 1) brand:wikidata・店名・ブランドの完全一致（チェーンの目印が付いている店舗）
+// 2) 「コンビニ」「ファストフード」など業種で絞り込んだ上での店名の部分一致
+//    （「セブン-イレブン 渋谷道玄坂店」のように、目印がなく店名に店舗名まで入っている店舗）
+//    業種の完全一致で先に絞り込むので、正規表現でも重くならない
 export function buildChainQuery(chains, { lat, lon }, radius, limit = 400) {
   const around = `(around:${radius},${lat},${lon})`;
   const lines = [];
+  const patternsByKind = new Map();
   for (const c of chains) {
     for (const id of c.osm?.wikidata ?? []) lines.push(`  nwr["brand:wikidata"="${q(id)}"]${around};`);
     for (const n of c.osm?.names ?? []) {
       lines.push(`  nwr["name"="${q(n)}"]${around};`);
       lines.push(`  nwr["brand"="${q(n)}"]${around};`);
     }
+    for (const [key, values] of Object.entries(c.kinds ?? {})) {
+      for (const v of values) {
+        const kind = `["${q(key)}"="${q(v)}"]`;
+        patternsByKind.set(kind, [...(patternsByKind.get(kind) ?? []), c.pattern]);
+      }
+    }
+  }
+  for (const [kind, patterns] of patternsByKind) {
+    lines.push(`  nwr${kind}${around}["name"~"${q(patterns.join('|'))}",i];`);
   }
   return wrap(lines, limit);
 }

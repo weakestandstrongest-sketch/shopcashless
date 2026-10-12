@@ -339,6 +339,7 @@ dialog#detail::backdrop { background: rgba(0, 0, 0, .35); }
 .m-left { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
 .m-name { font-weight: 600; font-size: 14px; }
 .m-vote { display: flex; gap: 4px; }
+.m-hint { grid-column: 1 / -1; grid-row: 2; font-size: 11px; color: var(--muted); }
 .m-vote button {
   border: 1px solid var(--border);
   background: var(--surface);

@@ -34,6 +34,8 @@ test('findMethod: 支払い方法名を判定する', () => {
   assert.equal(findMethod('Suica')?.id, 'transit');
   assert.equal(findMethod('交通系IC')?.id, 'transit');
   assert.equal(findMethod('d払い')?.id, 'dbarai');
+  assert.equal(findMethod('Smart Code')?.id, 'smartcode');
+  assert.equal(findMethod('スマートコード')?.id, 'smartcode');
   assert.equal(findMethod('マック'), null);
 });
 
@@ -211,7 +213,20 @@ test('Overpass クエリ：チェーンは完全一致（速い）で探し、�
   assert.match(q, /\["brand:wikidata"="Q37158"\]\(around:2000,35,139\)/);
   assert.match(q, /\["name"="スターバックス"\]/);
   assert.match(q, /\["brand"="Starbucks"\]/);
-  assert.doesNotMatch(q, /~/); // 正規表現なし
+  // 正規表現は、業種の完全一致で絞り込んだ後にだけ使う（重くならないように）
+  for (const line of q.split('\n').filter((l) => l.includes('~'))) {
+    assert.match(line, /^  nwr\["(amenity|shop)"="[a-z_]+"\]\(around:/, line);
+  }
+  // 店名に店舗名まで入っていて、ブランドの目印がない店舗も拾える
+  assert.match(q, /\["amenity"="cafe"\]\(around:2000,35,139\)\["name"~"スターバックス\|Starbucks",i\]/);
+  const seven = buildChainQuery([CHAIN_BY_ID.seven], { lat: 35, lon: 139 }, 2000);
+  assert.match(seven, /\["shop"="convenience"\]\(around:2000,35,139\)\["name"~/);
+  for (const n of ['セブン-イレブン 渋谷道玄坂店', 'セブンイレブン新宿店', 'セブン－イレブン', '7-ELEVEN']) {
+    assert.match(n, new RegExp(CHAIN_BY_ID.seven.pattern, 'i'), n);
+  }
+  // 複数チェーンでも、同じ業種の条件は 1 行にまとめる
+  const multi = buildChainQuery([CHAIN_BY_ID.seven, CHAIN_BY_ID.lawson], { lat: 35, lon: 139 }, 1000);
+  assert.equal(multi.split('\n').filter((l) => l.includes('"shop"="convenience"')).length, 1);
   const m = buildChainQuery([CHAIN_BY_ID.mcdonalds, CHAIN_BY_ID.lawson], { lat: 35, lon: 139 }, 1000);
   assert.match(m, /"McDonald's"/);
   assert.match(m, /Q11323850/); // ナチュラルローソン
