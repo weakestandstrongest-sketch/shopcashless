@@ -1,16 +1,16 @@
-import { CATEGORIES, METHODS, METHOD_BY_ID, SOURCE_LABEL, STATUS } from './payments.js?v=8';
-import { CHAINS, CHAIN_BY_ID } from './chains.js?v=8';
+import { CATEGORIES, METHODS, METHOD_BY_ID, SOURCE_LABEL, STATUS } from './payments.js?v=9';
+import { CHAINS, CHAIN_BY_ID } from './chains.js?v=9';
 import {
   appleMapsUrl, areaFromAddress, chainIdForName, customMatchesQuery, customToShop, areaFromGsi, dedupeShops, distanceMeters, extractStations, formatDistance, googleMapsUrl,
   isStation, mergePayments, nearestStation, osmUrl, parseQuery, statusFor, toShop,
-} from './core.js?v=8';
+} from './core.js?v=9';
 import {
   geocode, gsiReverse, nominatimSearch, reverseGeocode, searchByName, searchByPayment, searchChains, SearchError,
-} from './overpass.js?v=8';
+} from './overpass.js?v=9';
 import {
   addCustomShop, getAllChainMine, getAllMine, getChainMine, getCustomShops, getMine, removeCustomShop,
   setChainMine, setMine,
-} from './storage.js?v=8';
+} from './storage.js?v=9';
 
 const DEFAULT_CENTER = { lat: 35.681236, lon: 139.767125 }; // 東京駅
 const MAX_RESULTS = 80;
@@ -121,13 +121,15 @@ function showMe(pos) {
   else meMarker = L.marker(ll, { icon: L.divIcon({ className: '', html: '<div class="me-dot"></div>', iconSize: [16, 16] }), interactive: false }).addTo(map);
 }
 
-function getLocation({ timeout = 8000 } = {}) {
+// 現在地。お店探しには数十m の精度で十分なので、GPS の高精度モードは使わない（数秒速い）。
+// 2 分以内に取った位置はそのまま使う
+function getLocation({ timeout = 6000, highAccuracy = false } = {}) {
   return new Promise((resolve) => {
     if (!navigator.geolocation) return resolve(null);
     navigator.geolocation.getCurrentPosition(
       (p) => resolve({ lat: p.coords.latitude, lon: p.coords.longitude }),
       () => resolve(null),
-      { enableHighAccuracy: true, timeout, maximumAge: 60000 },
+      { enableHighAccuracy: highAccuracy, timeout, maximumAge: highAccuracy ? 0 : 120000 },
     );
   });
 }
@@ -162,6 +164,7 @@ async function runSearch(raw, { preferMap = false, center: fixedCenter = null } 
   state.controller?.abort();
   state.controller = new AbortController();
   const { signal } = state.controller;
+  const t0 = performance.now();
   els.searchHere.hidden = true;
   els.intro.hidden = true;
 
@@ -186,27 +189,51 @@ async function runSearch(raw, { preferMap = false, center: fixedCenter = null } 
     state.focusMethod = method?.id ?? null;
 
     const radius = getRadius();
+    const ctx = { center, radius, name, method, chain, t0 };
     const label = method ? `${method.name} が使えそうなお店` : `「${chain?.name ?? name}」`;
-    // 待っている間、経過秒数とサーバーの切り替えを表示する
-    const started = Date.now();
-    let retryNote = '';
-    const tick = () => setStatus(`${label}を探しています…（半径${formatDistance(radius)}・${Math.round((Date.now() - started) / 1000)}秒）${retryNote}`);
+    // 待っている間、経過秒数とサーバーの状況を表示する
+    let note = '';
+    let partialCount = null;
+    const tick = () => {
+      if (partialCount != null) {
+        setStatus(`${label}：まず${partialCount}件を表示中。もれがないか詳しく検索しています…（${secs(t0)}秒）${note}`);
+      } else {
+        setStatus(`${label}を探しています…（半径${formatDistance(radius)}・${secs(t0)}秒）${note}`);
+      }
+    };
     tick();
     const ticker = setInterval(tick, 1000);
-    const opts = { signal, onRetry: () => { retryNote = ' 混雑のため別のサーバーで再試行中'; tick(); } };
-    let elements = [];
+    const opts = { signal, onRetry: () => { note = ' ※混雑のため別のサーバーにも問い合わせ中'; tick(); } };
+
+    // 本命の検索（Overpass）。前回と同じ検索ならキャッシュから一瞬で返る
+    let mainDone = false;
+    const mainP = (method ? findElementsForMethod(method, center, radius, opts)
+      : chain ? searchChains([chain], center, radius, opts)
+        : searchByName(name, center, radius, opts)).finally(() => { mainDone = true; });
+    // 本命が 0.8 秒で返ってこなければ、速い検索（Nominatim）の結果を先に表示する
+    const quickP = method ? Promise.resolve(null)
+      : wait(800).then(() => (mainDone ? null : nominatimSearch(chain ? chain.osm.names[0] : name, center, radius, { signal })))
+        .catch(() => null);
+    quickP.then((quick) => {
+      if (!quick?.length || mainDone || signal.aborted) return;
+      partialCount = present(quick, ctx, { partial: true });
+      tick();
+    });
+
+    let elements;
     let fallbackNote = '';
     try {
-      if (method) elements = await findElementsForMethod(method, center, radius, opts);
-      else if (chain) elements = await searchChains([chain], center, radius, opts);
-      else elements = await searchByName(name, center, radius, opts);
+      elements = await mainP;
+      // 先に表示した分も合わせる（同じ店舗は 1 つにまとめる）
+      const quick = await Promise.race([quickP, Promise.resolve(null)]);
+      if (quick) elements = [...elements, ...quick];
     } catch (e) {
       if (!(e instanceof SearchError) || e.kind === 'offline') throw e;
-      // 地図データのサーバー（Overpass）が使えないときは、予備の検索（Nominatim）で探す
-      retryNote = ' 予備の方法で検索中';
+      // 地図データのサーバー（Overpass）が使えないときは、速い検索（Nominatim）の結果で表示する
+      note = ' ※予備の方法で検索中';
       tick();
       try {
-        elements = await fallbackSearch({ method, chain, name }, center, radius, signal);
+        elements = (await quickP) ?? await fallbackSearch({ method, chain, name }, center, radius, signal);
       } catch (e2) {
         if (e2.name === 'AbortError') throw e2;
         throw e; // 予備もだめなら、元の失敗理由を表示する
@@ -215,41 +242,7 @@ async function runSearch(raw, { preferMap = false, center: fixedCenter = null } 
     } finally {
       clearInterval(ticker);
     }
-
-    const stations = extractStations(elements);
-    let shops = dedupeShops(elements.filter((e) => !isStation(e)).map((e) => toShop(e, method ? null : chain)))
-      .filter((s) => distanceMeters(center, s) <= radius * 1.05); // 建物の中心が範囲外の場合を除く
-    // 自分で追加したお店も加える
-    const customs = getCustomShops().map(customToShop)
-      .filter((s) => distanceMeters(center, s) <= radius && customMatchesQuery(s, { chain, method, name }));
-    shops = [...customs, ...shops];
-    if (method) {
-      const mineAll = getAllMine();
-      const mineChains = getAllChainMine();
-      shops = shops.filter((s) => ['yes', 'some'].includes(statusFor(s, method.id, CHAIN_BY_ID, mineAll, mineChains)));
-    }
-
-    for (const s of shops) {
-      s.distance = distanceMeters(center, s);
-      s.station = nearestStation(s, stations);
-    }
-    shops.sort((a, b) => a.distance - b.distance);
-    const total = shops.length;
-    state.shops = shops.slice(0, MAX_RESULTS);
-    state.radius = radius;
-
-    renderResults();
-    renderMissingHint(center);
-    renderMarkers();
-    showRange(center);
-
-    if (state.shops.length === 0) {
-      setStatus(`${center.origin}半径${formatDistance(radius)}以内に見つかりませんでした。検索ボタン左の範囲を広げるか、「${name} 渋谷」のように地名をつけてみてください。${fallbackNote}`);
-    } else {
-      const what = method ? `${method.name} が使えそうなお店` : `「${chain?.name ?? name}」`;
-      const more = total > state.shops.length ? `（近い順に${state.shops.length}件を表示）` : '（近い順）';
-      setStatus(`${what}：${center.origin}半径${formatDistance(radius)}以内に${total}件${more}${fallbackNote}`);
-    }
+    present(elements, ctx, { note: fallbackNote });
     lookupAreas(signal);
   } catch (e) {
     if (e.name === 'AbortError') return;
@@ -261,6 +254,49 @@ async function runSearch(raw, { preferMap = false, center: fixedCenter = null } 
       setStatus(`検索に失敗しました（${e.message}）。もう一度お試しください。`, { error: true });
     }
   }
+}
+
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const secs = (t0) => ((performance.now() - t0) / 1000).toFixed(0);
+
+// 検索結果（Overpass / Nominatim の要素）を店舗リストにして表示する。表示した件数を返す
+function present(elements, { center, radius, name, method, chain, t0 }, { partial = false, note = '' } = {}) {
+  const stations = extractStations(elements);
+  let shops = dedupeShops(elements.filter((e) => !isStation(e)).map((e) => toShop(e, method ? null : chain)))
+    .filter((s) => distanceMeters(center, s) <= radius * 1.05); // 建物の中心が範囲外の場合を除く
+  // 自分で追加したお店も加える
+  const customs = getCustomShops().map(customToShop)
+    .filter((s) => distanceMeters(center, s) <= radius && customMatchesQuery(s, { chain, method, name }));
+  shops = [...customs, ...shops];
+  if (method) {
+    const mineAll = getAllMine();
+    const mineChains = getAllChainMine();
+    shops = shops.filter((s) => ['yes', 'some'].includes(statusFor(s, method.id, CHAIN_BY_ID, mineAll, mineChains)));
+  }
+  for (const s of shops) {
+    s.distance = distanceMeters(center, s);
+    s.station = nearestStation(s, stations);
+  }
+  shops.sort((a, b) => a.distance - b.distance);
+  const total = shops.length;
+  state.shops = shops.slice(0, MAX_RESULTS);
+  state.radius = radius;
+
+  renderResults();
+  renderMarkers();
+  if (!partial || !rangeCircle) showRange(center);
+  if (partial) return state.shops.length;
+
+  renderMissingHint(center);
+  const took = `（${((performance.now() - t0) / 1000).toFixed(1)}秒）`;
+  if (state.shops.length === 0) {
+    setStatus(`${center.origin}半径${formatDistance(radius)}以内に見つかりませんでした。検索ボタン左の範囲を広げるか、「${name} 渋谷」のように地名をつけてみてください。${note}`);
+  } else {
+    const what = method ? `${method.name} が使えそうなお店` : `「${chain?.name ?? name}」`;
+    const more = total > state.shops.length ? `（近い順に${state.shops.length}件を表示）` : '（近い順）';
+    setStatus(`${what}：${center.origin}半径${formatDistance(radius)}以内に${total}件${more}${took}${note}`);
+  }
+  return state.shops.length;
 }
 
 // その支払い方法が使える（かもしれない）チェーン。自分で「使える」と記録したチェーンも含める

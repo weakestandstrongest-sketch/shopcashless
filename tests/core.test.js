@@ -138,7 +138,7 @@ test('チェーンデータ：未定義の支払い方法IDや不正な状態を
 
 test('Overpass クエリ：名前と支払い方法の検索', () => {
   const q = buildNameQuery(namePatternFor('とんかつ"まい泉'), { lat: 35.6, lon: 139.7 }, 1500);
-  assert.match(q, /around:1500,35\.6,139\.7/);
+  assert.match(q, /around:1500,35\.600,139\.700/);
   assert.match(q, /\["name"~"とんかつ\\"まい泉\|トンカツ\\"マイ泉",i\]/);
   // 正規表現の \ は Overpass の文字列内で \\ になる
   const r = buildNameQuery(namePatternFor('a.b'), { lat: 0, lon: 0 }, 100);
@@ -210,7 +210,7 @@ test('areaFromGsi: 国土地理院の結果から町名を取り出す', () => {
 
 test('Overpass クエリ：チェーンは完全一致（速い）で探し、重い正規表現を使わない', () => {
   const q = buildChainQuery([CHAIN_BY_ID.starbucks], { lat: 35, lon: 139 }, 2000);
-  assert.match(q, /\["brand:wikidata"="Q37158"\]\(around:2000,35,139\)/);
+  assert.match(q, /\["brand:wikidata"="Q37158"\]\(around:2000,35.000,139.000\)/);
   assert.match(q, /\["name"="スターバックス"\]/);
   assert.match(q, /\["brand"="Starbucks"\]/);
   // 正規表現は、業種の完全一致で絞り込んだ後にだけ使う（重くならないように）
@@ -218,10 +218,10 @@ test('Overpass クエリ：チェーンは完全一致（速い）で探し、�
     assert.match(line, /^  nwr\[("amenity"="[a-z_]+"|"shop")\]\(around:/, line);
   }
   // 店名に店舗名まで入っていて、ブランドの目印がない店舗も拾える
-  assert.match(q, /\["amenity"="cafe"\]\(around:2000,35,139\)\["name"~"スターバックス\|Starbucks",i\]/);
+  assert.match(q, /\["amenity"="cafe"\]\(around:2000,35.000,139.000\)\["name"~"スターバックス\|Starbucks",i\]/);
   const seven = buildChainQuery([CHAIN_BY_ID.seven], { lat: 35, lon: 139 }, 2000);
   // コンビニは shop の値を問わない（shop=yes で登録された店舗も拾う）
-  assert.match(seven, /nwr\["shop"\]\(around:2000,35,139\)\["name"~/);
+  assert.match(seven, /nwr\["shop"\]\(around:2000,35.000,139.000\)\["name"~/);
   for (const n of ['セブン-イレブン 渋谷道玄坂店', 'セブンイレブン新宿店', 'セブン－イレブン', '7-ELEVEN']) {
     assert.match(n, new RegExp(CHAIN_BY_ID.seven.pattern, 'i'), n);
   }

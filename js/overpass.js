@@ -6,22 +6,29 @@
 // - 正規表現を使うのは、チェーン以外の店名で探すときだけ
 // - 店舗かどうか（shop / amenity …）の判定はサーバーではなく、受け取ってから行う
 
-import { METHOD_BY_ID } from './payments.js?v=8';
-import { namePatternFor } from './core.js?v=8';
+import { METHOD_BY_ID } from './payments.js?v=9';
+import { namePatternFor } from './core.js?v=9';
 
 const OVERPASS_ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',
   'https://overpass.private.coffee/api/interpreter',
   'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
 ];
-const ATTEMPT_TIMEOUT_MS = 20000;
+const ATTEMPT_TIMEOUT_MS = 20000; // 1 台あたりの待ち時間の上限
+const HEDGE_MS = 3500; // この時間で応答がなければ、次のサーバーにも同時に問い合わせる
+const CACHE_KEY = 'shopcashless:overpass-cache:v1';
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 店舗データは頻繁に変わらないので 1 日使い回す
+const CACHE_MAX = 8;
+
+// 位置を約 100m 単位に丸める（少し動いただけでも同じ検索としてキャッシュを使えるように）
+const r3 = (n) => Number(n).toFixed(3);
 
 // Overpass の文字列リテラル用に \ と " をエスケープ
 const q = (text) => String(text).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 
 // 見つかった店舗の近く（1.2km以内）の駅もいっしょに取得する。店舗の場所の目印にする
 function wrap(statements, limit) {
-  return `[out:json][timeout:25];
+  return `[out:json][timeout:15];
 (
 ${statements.join('\n')}
 )->.shops;
@@ -36,7 +43,7 @@ out body 300;`;
 //    （「セブン-イレブン 渋谷道玄坂店」のように、目印がなく店名に店舗名まで入っている店舗）
 //    業種の完全一致で先に絞り込むので、正規表現でも重くならない
 export function buildChainQuery(chains, { lat, lon }, radius, limit = 400) {
-  const around = `(around:${radius},${lat},${lon})`;
+  const around = `(around:${radius},${r3(lat)},${r3(lon)})`;
   const lines = [];
   const patternsByKind = new Map();
   for (const c of chains) {
@@ -59,7 +66,7 @@ export function buildChainQuery(chains, { lat, lon }, radius, limit = 400) {
 
 // チェーン以外の店名で探すクエリ（部分一致）
 export function buildNameQuery(pattern, { lat, lon }, radius, limit = 400) {
-  const around = `(around:${radius},${lat},${lon})`;
+  const around = `(around:${radius},${r3(lat)},${r3(lon)})`;
   const p = q(pattern);
   return wrap([
     `  nwr${around}["name"~"${p}",i];`,
@@ -71,7 +78,7 @@ export function buildNameQuery(pattern, { lat, lon }, radius, limit = 400) {
 // 指定の支払い方法タグが付いた店舗を探すクエリ（例：payment:paypay=yes）
 export function buildPaymentQuery(methodId, { lat, lon }, radius, limit = 400) {
   const keys = METHOD_BY_ID[methodId]?.osm ?? [];
-  const around = `(around:${radius},${lat},${lon})`;
+  const around = `(around:${radius},${r3(lat)},${r3(lon)})`;
   return wrap(keys.flatMap((k) => [
     `  nwr["payment:${k}"="yes"]${around};`,
     `  nwr["payment:${k}"="only"]${around};`,
@@ -86,44 +93,102 @@ export class SearchError extends Error {
   }
 }
 
-async function postOverpass(query, signal, onRetry) {
-  const failures = [];
-  for (const [i, url] of OVERPASS_ENDPOINTS.entries()) {
-    if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
-    if (i > 0) onRetry?.(i);
-    const host = new URL(url).host;
-    // 1 台あたり最大 20 秒。応答がなければ次のサーバーへ
-    const attempt = new AbortController();
-    const timer = setTimeout(() => attempt.abort(), ATTEMPT_TIMEOUT_MS);
-    const stop = () => attempt.abort();
-    signal?.addEventListener('abort', stop);
-    try {
-      const res = await fetch(url, { method: 'POST', body: new URLSearchParams({ data: query }), signal: attempt.signal });
-      if (!res.ok) {
-        failures.push(`${host}: HTTP ${res.status}`); // 429（混雑）・504（時間切れ）など
-        continue;
-      }
-      const json = await res.json();
-      if (json.remark && /timed out|out of memory/i.test(json.remark) && !json.elements?.length) {
-        failures.push(`${host}: 時間切れ`);
-        continue;
-      }
-      return json.elements ?? [];
-    } catch (e) {
-      if (signal?.aborted) throw e; // 新しい検索が始まった
-      // 混雑時のエラー応答は、ブラウザには「読み込み失敗」としか見えないことがある
-      failures.push(`${host}: ${attempt.signal.aborted ? '20秒で応答なし' : `応答を受け取れず（${e.message}）`}`);
-    } finally {
-      clearTimeout(timer);
-      signal?.removeEventListener('abort', stop);
-    }
+// ---- 結果のキャッシュ（同じ検索は 1 日以内ならすぐ表示） ----
+function readCache() {
+  try {
+    return JSON.parse(localStorage.getItem(CACHE_KEY) || '{}') || {};
+  } catch {
+    return {};
   }
+}
+
+function cacheGet(query) {
+  const hit = readCache()[query];
+  return hit && Date.now() - hit.t < CACHE_TTL_MS ? hit.elements : null;
+}
+
+function cacheSet(query, elements) {
+  const all = readCache();
+  all[query] = { t: Date.now(), elements };
+  const keys = Object.keys(all).sort((a, b) => all[b].t - all[a].t);
+  for (const k of keys.slice(CACHE_MAX)) delete all[k];
+  try {
+    localStorage.setItem(CACHE_KEY, JSON.stringify(all));
+  } catch {
+    try { localStorage.removeItem(CACHE_KEY); } catch { /* 保存できなくても検索はできる */ }
+  }
+}
+
+async function fetchOverpass(url, query, signal) {
+  const res = await fetch(url, { method: 'POST', body: new URLSearchParams({ data: query }), signal });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`); // 429（混雑）・504（時間切れ）など
+  const json = await res.json();
+  if (json.remark && /timed out|out of memory/i.test(json.remark) && !json.elements?.length) throw new Error('時間切れ');
+  return json.elements ?? [];
+}
+
+// 複数のサーバーに「少しずつずらして」問い合わせ、最初に返ってきた結果を使う。
+// 1 台目がすぐ答えれば 1 回で済み、混んでいるときだけ 2 台目・3 台目も使う
+function postOverpass(query, signal, onRetry) {
+  const cached = cacheGet(query);
+  if (cached) return Promise.resolve(cached);
+
+  return new Promise((resolve, reject) => {
+    const failures = [];
+    const controllers = [];
+    const timers = [];
+    let next = 0;
+    let failed = 0;
+    let settled = false;
+
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      timers.forEach(clearTimeout);
+      controllers.forEach((c) => c.abort());
+      signal?.removeEventListener('abort', onAbort);
+      fn(value);
+    };
+    const onAbort = () => finish(reject, new DOMException('aborted', 'AbortError'));
+    if (signal?.aborted) return onAbort();
+    signal?.addEventListener('abort', onAbort);
+
+    const launch = () => {
+      if (settled || next >= OVERPASS_ENDPOINTS.length) return;
+      const i = next++;
+      const url = OVERPASS_ENDPOINTS[i];
+      const host = new URL(url).host;
+      if (i > 0) onRetry?.(i);
+      const ctrl = new AbortController();
+      controllers.push(ctrl);
+      let timedOut = false;
+      const limit = setTimeout(() => { timedOut = true; ctrl.abort(); }, ATTEMPT_TIMEOUT_MS);
+      timers.push(limit, setTimeout(launch, HEDGE_MS));
+      fetchOverpass(url, query, ctrl.signal)
+        .then((elements) => {
+          cacheSet(query, elements);
+          finish(resolve, elements);
+        })
+        .catch((e) => {
+          if (settled) return;
+          // 混雑時のエラー応答は、ブラウザには「読み込み失敗」としか見えないことがある
+          failures.push(`${host}: ${timedOut ? `${ATTEMPT_TIMEOUT_MS / 1000}秒で応答なし` : e.message.startsWith('HTTP') || e.message === '時間切れ' ? e.message : `応答を受け取れず（${e.message}）`}`);
+          failed += 1;
+          if (failed === OVERPASS_ENDPOINTS.length) finish(reject, toSearchError(failures));
+          else launch(); // 失敗したらすぐ次のサーバーへ
+        })
+        .finally(() => clearTimeout(limit));
+    };
+    launch();
+  });
+}
+
+function toSearchError(failures) {
   const detail = failures.join(' / ');
   if (typeof navigator !== 'undefined' && navigator.onLine === false) {
-    throw new SearchError('offline', 'この端末がインターネットに接続されていないようです', detail);
+    return new SearchError('offline', 'この端末がインターネットに接続されていないようです', detail);
   }
-  const busy = failures.some((f) => /HTTP|時間切れ|応答なし/.test(f));
-  throw busy
+  return failures.some((f) => /HTTP|時間切れ|応答なし/.test(f))
     ? new SearchError('busy', '地図データのサーバーが混み合っています', detail)
     : new SearchError('blocked', '地図データのサーバーから応答を受け取れませんでした', detail);
 }
