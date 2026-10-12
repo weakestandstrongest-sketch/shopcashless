@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>ShopCashless</title>
+  <meta name="description" content="お店の名前を入れると、その店舗で使えるキャッシュレス決済がすぐわかる">
+  <meta name="theme-color" content="#0b7a5c">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="ShopCashless">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="icons/icon.svg" alt="" width="28" height="28">
+      <div>
+        <h1>ShopCashless</h1>
+        <p>このお店、何で払える？</p>
+      </div>
+    </div>
+    <form id="search-form" class="search" role="search" autocomplete="off">
+      <input id="q" type="search" enterkeyhint="search"
+             placeholder="店名・支払い方法（例：マック 渋谷 / PayPay）" aria-label="店名や支払い方法で検索">
+      <button type="submit">検索</button>
+    </form>
+    <div class="chips" id="quick">
+      <button type="button" data-q="マック">マック</button>
+      <button type="button" data-q="スタバ">スタバ</button>
+      <button type="button" data-q="セブン">セブン</button>
+      <button type="button" data-q="ファミマ">ファミマ</button>
+      <button type="button" data-q="PayPay">PayPayが使える店</button>
+      <button type="button" data-q="交通系IC">交通系ICが使える店</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="map-wrap" aria-label="地図">
+      <div id="map"></div>
+      <div class="map-actions">
+        <button type="button" id="locate" title="現在地">◎ 現在地</button>
+        <button type="button" id="search-here" hidden>このエリアで再検索</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div id="status" class="status" role="status" aria-live="polite"></div>
+      <div id="chain-card"></div>
+      <ol id="results" class="results"></ol>
+      <div id="intro" class="intro">
+        <h2>使いかた</h2>
+        <ul>
+          <li><b>店名で探す</b>：「マック」「スタバ」など略称でもOK。近くの店舗が地図とリストに出ます。</li>
+          <li><b>場所を指定</b>：「マック 渋谷」のように地名をつけると、その周辺の店舗を探します。</li>
+          <li><b>支払い方法で探す</b>：「PayPay」「交通系IC」と入れると、それが使えそうなお店を探します。</li>
+          <li><b>店舗ごとに確認</b>：店舗をタップすると支払い方法の一覧。実際に使えた／使えなかったを記録できます。</li>
+        </ul>
+        <p class="fine">ホーム画面に追加すると（Safari の共有ボタン →「ホーム画面に追加」）アプリのように使えます。</p>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="detail" aria-labelledby="detail-title">
+    <div class="sheet">
+      <div class="sheet-head">
+        <div>
+          <h2 id="detail-title"></h2>
+          <p id="detail-sub" class="sub"></p>
+        </div>
+        <button type="button" class="close" id="detail-close" aria-label="閉じる">✕</button>
+      </div>
+      <div class="map-links" id="detail-links"></div>
+      <div class="legend">
+        <span><span class="src src-mine">自分</span> 自分の記録</span>
+        <span><span class="src src-osm">店舗</span> この店舗のデータ</span>
+        <span><span class="src src-chain">目安</span> チェーン共通の目安</span>
+      </div>
+      <div id="detail-note"></div>
+      <div id="detail-body"></div>
+      <details class="more" id="detail-more">
+        <summary>ほかの支払い方法を記録する</summary>
+        <div id="detail-unknown"></div>
+      </details>
+      <p class="fine">
+        「店舗データ」は <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> の情報、
+        「チェーン共通の目安」は公開情報をもとにしたもので、店舗によって異なる場合があります。
+        「使えた／使えず」の記録はこの端末にだけ保存されます（もう一度押すと取り消し）。
+      </p>
+    </div>
+  </dialog>
+
+  <script src="vendor/leaflet/leaflet.js"></script>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

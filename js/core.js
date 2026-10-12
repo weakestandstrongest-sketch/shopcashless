@@ -1,0 +1,192 @@
+// DOM に依存しないロジック（テスト対象）。
+
+import { METHODS, METHOD_ID_BY_OSM_KEY } from './payments.js';
+import { CHAINS } from './chains.js';
+
+// 入力のゆれを吸収する：全角/半角・大文字小文字・ひらがな/カタカナ・空白や記号
+export function normalize(text) {
+  return String(text ?? '')
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[ぁ-ゖ]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) + 0x60))
+    .replace(/[\s・･\-‐−–—_.'’&＆!！]/g, '')
+    .replace(/[ｰー〜~]/g, 'ー');
+}
+
+export function findChain(query, { exact = false } = {}) {
+  const q = normalize(query);
+  if (!q) return null;
+  for (const chain of CHAINS) {
+    if (chain.aliases.some((a) => normalize(a) === q)) return chain;
+  }
+  if (exact) return null;
+  // 「マクドナルド渋谷店」のように店舗名つきで入力された場合
+  for (const chain of CHAINS) {
+    if (chain.aliases.some((a) => normalize(a).length >= 3 && q.startsWith(normalize(a)))) return chain;
+  }
+  return null;
+}
+
+export function findMethod(query) {
+  const q = normalize(query);
+  if (!q) return null;
+  return METHODS.find((m) => [m.name, ...m.words].some((w) => normalize(w) === q)) ?? null;
+}
+
+// 検索欄の入力を解釈する。
+//   「マック 渋谷」     → chain=マクドナルド, area=渋谷
+//   「PayPay」          → method=PayPay
+//   「セブン イレブン」 → chain=セブン-イレブン（空白を除くと店名として一致するので地名扱いしない）
+//   「〇〇食堂 新宿」   → name=〇〇食堂, area=新宿
+export function parseQuery(raw) {
+  const text = String(raw ?? '').normalize('NFKC').trim().replace(/\s+/g, ' ');
+  if (!text) return { name: '', area: '', chain: null, method: null };
+  const whole = { name: text, area: '' };
+  const method = findMethod(text);
+  if (method) return { ...whole, chain: null, method };
+  const chain = findChain(text, { exact: true });
+  if (chain) return { ...whole, chain, method: null };
+  const [first, ...rest] = text.split(' ');
+  const area = rest.join(' ');
+  const m = findMethod(first);
+  if (m) return { name: first, area, chain: null, method: m };
+  return { name: first, area, chain: findChain(first), method: null };
+}
+
+function osmValueToStatus(value) {
+  const v = String(value).trim().toLowerCase();
+  if (v === 'yes' || v === 'only') return 'yes';
+  if (v === 'no') return 'no';
+  return null;
+}
+
+// OSM タグ（payment:paypay=yes など）→ { paypay: 'yes', ... }
+export function parseOsmPayments(tags = {}) {
+  const result = {};
+  for (const [key, value] of Object.entries(tags)) {
+    if (!key.startsWith('payment:')) continue;
+    const id = METHOD_ID_BY_OSM_KEY[key.slice('payment:'.length).toLowerCase()];
+    const status = osmValueToStatus(value);
+    if (!id || !status) continue;
+    // 交通系IC のように複数タグを 1 つにまとめる方法は、どれか 1 つでも yes なら yes
+    if (result[id] === 'yes') continue;
+    result[id] = status;
+  }
+  // カードブランドが使えるならクレジットカードも使える
+  if (!result.credit && ['visa', 'mastercard', 'jcb', 'amex', 'diners'].some((b) => result[b] === 'yes')) {
+    result.credit = 'yes';
+  }
+  return result;
+}
+
+// 3 つの情報源を重ねる。優先度：自分の記録 ＞ 店舗ごとの地図データ ＞ チェーン共通の目安
+export function mergePayments({ chain = {}, osm = {}, mine = {} }) {
+  const merged = {};
+  for (const m of METHODS) {
+    if (mine[m.id]) merged[m.id] = { status: mine[m.id], source: 'mine' };
+    else if (osm[m.id]) merged[m.id] = { status: osm[m.id], source: 'osm' };
+    else if (chain[m.id]) merged[m.id] = { status: chain[m.id], source: 'chain' };
+  }
+  return merged;
+}
+
+export function distanceMeters(a, b) {
+  const R = 6371000;
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLon = toRad(b.lon - a.lon);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+export function formatDistance(m) {
+  if (m < 1000) return `${Math.round(m / 10) * 10}m`;
+  return `${(m / 1000).toFixed(m < 10000 ? 1 : 0)}km`;
+}
+
+// Overpass の正規表現に埋め込めるようにエスケープ
+export function escapeRegex(text) {
+  return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// 名前検索用の正規表現。ひらがな入力でもカタカナ表記の店に当たるようにする
+export function namePatternFor(query) {
+  const raw = String(query).normalize('NFKC').trim();
+  const kata = raw.replace(/[ぁ-ゖ]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) + 0x60));
+  return [...new Set([raw, kata])].filter(Boolean).map(escapeRegex).join('|');
+}
+
+const PLACE_KEYS = ['shop', 'amenity', 'tourism', 'leisure', 'craft', 'office', 'healthcare'];
+
+// Overpass の要素を、アプリで扱う店舗オブジェクトに変換する
+export function toShop(el, chain = null) {
+  const tags = el.tags ?? {};
+  const lat = el.lat ?? el.center?.lat;
+  const lon = el.lon ?? el.center?.lon;
+  if (lat == null || lon == null) return null;
+  if (!PLACE_KEYS.some((k) => tags[k])) return null; // バス停・交差点名などを除く
+  if (chain?.kinds) {
+    const ok = Object.entries(chain.kinds).some(([k, vals]) => vals.includes(tags[k]));
+    if (!ok) return null;
+  }
+  const name = tags['name:ja'] || tags.name || tags.brand || '名前のない店舗';
+  const branch = tags['branch:ja'] || tags.branch || '';
+  const addr = [
+    tags['addr:province'], tags['addr:city'], tags['addr:quarter'], tags['addr:neighbourhood'],
+    tags['addr:block_number'], tags['addr:housenumber'],
+  ].filter(Boolean).join('') || tags['addr:full'] || '';
+  return {
+    key: `${el.type}/${el.id}`,
+    osmType: el.type,
+    osmId: el.id,
+    name,
+    branch,
+    displayName: branch && !name.includes(branch) ? `${name} ${branch}` : name,
+    lat,
+    lon,
+    addr,
+    openingHours: tags.opening_hours || '',
+    chainId: chain?.id ?? detectChainId(tags),
+    osmPayments: parseOsmPayments(tags),
+  };
+}
+
+export function detectChainId(tags = {}) {
+  const hay = [tags.brand, tags['brand:ja'], tags['brand:en'], tags.name, tags['name:ja'], tags['name:en']]
+    .filter(Boolean)
+    .join(' ');
+  for (const c of CHAINS) {
+    if (new RegExp(c.pattern, 'i').test(hay)) {
+      if (!c.kinds || Object.entries(c.kinds).some(([k, vals]) => vals.includes(tags[k]))) return c.id;
+    }
+  }
+  return null;
+}
+
+export function dedupeShops(shops) {
+  const seen = new Map();
+  for (const s of shops) if (s && !seen.has(s.key)) seen.set(s.key, s);
+  return [...seen.values()];
+}
+
+// 店舗の総合判定：その支払い方法が使えそうか
+export function statusFor(shop, methodId, chainsById, mineByShop = {}) {
+  const chainPayments = shop.chainId ? chainsById[shop.chainId]?.payments ?? {} : {};
+  const merged = mergePayments({ chain: chainPayments, osm: shop.osmPayments, mine: mineByShop[shop.key] ?? {} });
+  return merged[methodId]?.status ?? null;
+}
+
+// Google マップ / Apple マップで「この店舗」を開くための URL
+export function googleMapsUrl(shop) {
+  const q = encodeURIComponent(shop.displayName);
+  return `https://www.google.com/maps/search/${q}/@${shop.lat},${shop.lon},18z`;
+}
+
+export function appleMapsUrl(shop) {
+  const q = encodeURIComponent(shop.displayName);
+  return `https://maps.apple.com/?q=${q}&ll=${shop.lat},${shop.lon}&z=18`;
+}
+
+export function osmUrl(shop) {
+  return `https://www.openstreetmap.org/${shop.osmType}/${shop.osmId}`;
+}
