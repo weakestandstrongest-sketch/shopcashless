@@ -39,3 +39,38 @@ export function setMine(shop, methodId, status) {
   else all[shop.key] = entry;
   return writeAll(all);
 }
+
+// 「チェーン全体」の自分の記録（例：ガストは Smart Code が使える）。全店舗に反映される
+// 形式: { [chainId]: { paypay: 'yes', ... } }
+const CHAIN_KEY = 'shopcashless:chain-records:v1';
+
+function readChains() {
+  try {
+    return JSON.parse(localStorage.getItem(CHAIN_KEY) || '{}') || {};
+  } catch {
+    return {};
+  }
+}
+
+export function getAllChainMine() {
+  return readChains();
+}
+
+export function getChainMine(chainId) {
+  return readChains()[chainId] ?? {};
+}
+
+export function setChainMine(chainId, methodId, status) {
+  const all = readChains();
+  const entry = all[chainId] ?? {};
+  if (status) entry[methodId] = status;
+  else delete entry[methodId];
+  if (Object.keys(entry).length === 0) delete all[chainId];
+  else all[chainId] = entry;
+  try {
+    localStorage.setItem(CHAIN_KEY, JSON.stringify(all));
+    return true;
+  } catch {
+    return false;
+  }
+}

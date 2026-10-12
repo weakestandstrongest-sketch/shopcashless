@@ -1,7 +1,7 @@
 // DOM に依存しないロジック（テスト対象）。
 
-import { METHODS, METHOD_ID_BY_OSM_KEY } from './payments.js?v=6';
-import { CHAINS, CHAIN_BY_ID } from './chains.js?v=6';
+import { METHODS, METHOD_ID_BY_OSM_KEY } from './payments.js?v=7';
+import { CHAINS, CHAIN_BY_ID } from './chains.js?v=7';
 
 // 入力のゆれを吸収する：全角/半角・大文字小文字・ひらがな/カタカナ・空白や記号
 export function normalize(text) {
@@ -79,12 +79,14 @@ export function parseOsmPayments(tags = {}) {
   return result;
 }
 
-// 3 つの情報源を重ねる。優先度：自分の記録 ＞ 店舗ごとの地図データ ＞ チェーン共通の目安
-export function mergePayments({ chain = {}, osm = {}, mine = {} }) {
+// 情報源を重ねる。優先度：
+//   自分の記録（この店舗） ＞ 店舗ごとの地図データ ＞ 自分の記録（チェーン全体） ＞ チェーン共通の目安
+export function mergePayments({ chain = {}, osm = {}, mine = {}, mineChain = {} }) {
   const merged = {};
   for (const m of METHODS) {
     if (mine[m.id]) merged[m.id] = { status: mine[m.id], source: 'mine' };
     else if (osm[m.id]) merged[m.id] = { status: osm[m.id], source: 'osm' };
+    else if (mineChain[m.id]) merged[m.id] = { status: mineChain[m.id], source: 'mineChain' };
     else if (chain[m.id]) merged[m.id] = { status: chain[m.id], source: 'chain' };
   }
   return merged;
@@ -151,10 +153,7 @@ export function toShop(el, chain = null) {
   const lon = el.lon ?? el.center?.lon;
   if (lat == null || lon == null) return null;
   if (!PLACE_KEYS.some((k) => tags[k])) return null; // バス停・交差点名などを除く
-  if (chain?.kinds) {
-    const ok = Object.entries(chain.kinds).some(([k, vals]) => vals.includes(tags[k]));
-    if (!ok) return null;
-  }
+  if (chain && !matchesChainKind(tags, chain)) return null;
   const name = pickName(tags);
   const branch = tags['branch:ja'] || tags.branch || '';
   const displayName = branch && !normalize(name).includes(normalize(branch)) ? `${name} ${branch}` : name;
@@ -234,14 +233,21 @@ export function areaFromAddress(address = {}) {
   return [...new Set(parts)].join('');
 }
 
+// 店舗がそのチェーンの業種に合うか（同名の別施設を除くため）。
+// チェーンの目印（brand:wikidata）が付いていれば業種は問わない（店名だけだと百貨店の「松屋」などと区別できない）。
+// コンビニのように「shop」で表すチェーンは、shop の値（convenience / yes など）を問わない
+export function matchesChainKind(tags = {}, chain) {
+  if (!chain?.kinds) return true;
+  if (tags['brand:wikidata'] && chain.osm?.wikidata?.includes(tags['brand:wikidata'])) return true;
+  return Object.entries(chain.kinds).some(([k, vals]) => (k === 'shop' ? Boolean(tags.shop) : vals.includes(tags[k])));
+}
+
 export function detectChainId(tags = {}) {
   const hay = [tags.brand, tags['brand:ja'], tags['brand:en'], tags.name, tags['name:ja'], tags['name:en']]
     .filter(Boolean)
     .join(' ');
   for (const c of CHAINS) {
-    if (new RegExp(c.pattern, 'i').test(hay)) {
-      if (!c.kinds || Object.entries(c.kinds).some(([k, vals]) => vals.includes(tags[k]))) return c.id;
-    }
+    if (new RegExp(c.pattern, 'i').test(hay) && matchesChainKind(tags, c)) return c.id;
   }
   return null;
 }
@@ -253,9 +259,14 @@ export function dedupeShops(shops) {
 }
 
 // 店舗の総合判定：その支払い方法が使えそうか
-export function statusFor(shop, methodId, chainsById, mineByShop = {}) {
+export function statusFor(shop, methodId, chainsById, mineByShop = {}, mineByChain = {}) {
   const chainPayments = shop.chainId ? chainsById[shop.chainId]?.payments ?? {} : {};
-  const merged = mergePayments({ chain: chainPayments, osm: shop.osmPayments, mine: mineByShop[shop.key] ?? {} });
+  const merged = mergePayments({
+    chain: chainPayments,
+    osm: shop.osmPayments,
+    mine: mineByShop[shop.key] ?? {},
+    mineChain: (shop.chainId && mineByChain[shop.chainId]) || {},
+  });
   return merged[methodId]?.status ?? null;
 }
 

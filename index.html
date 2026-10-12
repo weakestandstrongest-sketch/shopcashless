@@ -14,7 +14,7 @@
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
-  <link rel="stylesheet" href="css/style.css?v=6">
+  <link rel="stylesheet" href="css/style.css?v=7">
 </head>
 <body>
   <header class="topbar">
@@ -64,6 +64,7 @@
       <div id="status" class="status" role="status" aria-live="polite"></div>
       <div id="chain-card"></div>
       <ol id="results" class="results"></ol>
+      <p id="missing" class="fine missing" hidden></p>
       <div id="intro" class="intro">
         <h2>使いかた</h2>
         <ul>
@@ -90,7 +91,7 @@
       </div>
       <div class="map-links" id="detail-links"></div>
       <div class="legend">
-        <span><span class="src src-mine">自分</span> 自分の記録</span>
+        <span><span class="src src-mine">自分</span> 自分の記録（店舗・チェーン）</span>
         <span><span class="src src-osm">店舗</span> この店舗のデータ</span>
         <span><span class="src src-chain">目安</span> チェーン共通の目安</span>
       </div>
@@ -109,6 +110,6 @@
   </dialog>
 
   <script src="vendor/leaflet/leaflet.js"></script>
-  <script type="module" src="js/app.js?v=6"></script>
+  <script type="module" src="js/app.js?v=7"></script>
 </body>
 </html>

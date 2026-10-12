@@ -6,8 +6,8 @@
 // - 正規表現を使うのは、チェーン以外の店名で探すときだけ
 // - 店舗かどうか（shop / amenity …）の判定はサーバーではなく、受け取ってから行う
 
-import { METHOD_BY_ID } from './payments.js?v=6';
-import { namePatternFor } from './core.js?v=6';
+import { METHOD_BY_ID } from './payments.js?v=7';
+import { namePatternFor } from './core.js?v=7';
 
 const OVERPASS_ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',
@@ -46,10 +46,9 @@ export function buildChainQuery(chains, { lat, lon }, radius, limit = 400) {
       lines.push(`  nwr["brand"="${q(n)}"]${around};`);
     }
     for (const [key, values] of Object.entries(c.kinds ?? {})) {
-      for (const v of values) {
-        const kind = `["${q(key)}"="${q(v)}"]`;
-        patternsByKind.set(kind, [...(patternsByKind.get(kind) ?? []), c.pattern]);
-      }
+      // コンビニなど shop で表すチェーンは、shop の値を問わない（shop=yes で登録された店舗も拾う）
+      const kinds = key === 'shop' ? ['["shop"]'] : values.map((v) => `["${q(key)}"="${q(v)}"]`);
+      for (const kind of kinds) patternsByKind.set(kind, [...(patternsByKind.get(kind) ?? []), c.pattern]);
     }
   }
   for (const [kind, patterns] of patternsByKind) {

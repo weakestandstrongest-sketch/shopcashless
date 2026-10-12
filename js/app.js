@@ -1,13 +1,15 @@
-import { CATEGORIES, METHODS, METHOD_BY_ID, SOURCE_LABEL, STATUS } from './payments.js?v=6';
-import { CHAINS, CHAIN_BY_ID } from './chains.js?v=6';
+import { CATEGORIES, METHODS, METHOD_BY_ID, SOURCE_LABEL, STATUS } from './payments.js?v=7';
+import { CHAINS, CHAIN_BY_ID } from './chains.js?v=7';
 import {
   appleMapsUrl, areaFromAddress, areaFromGsi, dedupeShops, distanceMeters, extractStations, formatDistance, googleMapsUrl,
   isStation, mergePayments, nearestStation, osmUrl, parseQuery, statusFor, toShop,
-} from './core.js?v=6';
+} from './core.js?v=7';
 import {
   geocode, gsiReverse, nominatimSearch, reverseGeocode, searchByName, searchByPayment, searchChains, SearchError,
-} from './overpass.js?v=6';
-import { getAllMine, getMine, setMine } from './storage.js?v=6';
+} from './overpass.js?v=7';
+import {
+  getAllChainMine, getAllMine, getChainMine, getMine, setChainMine, setMine,
+} from './storage.js?v=7';
 
 const DEFAULT_CENTER = { lat: 35.681236, lon: 139.767125 }; // 東京駅
 const MAX_RESULTS = 80;
@@ -27,6 +29,7 @@ const els = {
   chainCard: $('#chain-card'),
   results: $('#results'),
   intro: $('#intro'),
+  missing: $('#missing'),
   locate: $('#locate'),
   searchHere: $('#search-here'),
   detail: $('#detail'),
@@ -49,6 +52,7 @@ const state = {
   focusMethod: null,   // 支払い方法で探したときの方法ID
   activeKey: null,
   controller: null,
+  editingChain: null, // チェーン編集欄を開いたままにするチェーン
 };
 
 // ---------- 検索範囲（半径） ----------
@@ -121,23 +125,27 @@ function getLocation({ timeout = 8000 } = {}) {
 }
 
 // ---------- 検索 ----------
+// 検索の中心を決める。どこを中心に探したか（origin）も返して、画面に表示する
 async function resolveCenter(area, { preferMap = false } = {}) {
   if (area) {
     setStatus(`「${area}」の場所を調べています…`);
-    return geocode(area, { signal: state.controller.signal }); // 見つからなければ null
+    const hit = await geocode(area, { signal: state.controller.signal }); // 見つからなければ null
+    return hit && { ...hit, origin: `「${area}」から` };
   }
-  if (preferMap) {
+  const mapCenter = () => {
     const c = map.getCenter();
     return { lat: c.lat, lon: c.lng };
+  };
+  if (preferMap) return { ...mapCenter(), origin: '地図の中心から' };
+  // 移動していることもあるので、毎回現在地を取り直す（1分以内の位置はそのまま使われる）
+  setStatus('現在地を取得しています…');
+  const pos = await getLocation();
+  if (pos) {
+    state.me = pos;
+    showMe(pos);
+    return { ...pos, origin: '現在地から' };
   }
-  if (!state.me) {
-    setStatus('現在地を取得しています…');
-    state.me = await getLocation();
-    if (state.me) showMe(state.me);
-  }
-  if (state.me) return state.me;
-  const c = map.getCenter();
-  return { lat: c.lat, lon: c.lng };
+  return { ...mapCenter(), origin: '地図の中心から（現在地を取得できませんでした。「◎ 現在地」ボタンで再取得できます）' };
 }
 
 async function runSearch(raw, { preferMap = false, center: fixedCenter = null } = {}) {
@@ -205,7 +213,8 @@ async function runSearch(raw, { preferMap = false, center: fixedCenter = null } 
       .filter((s) => distanceMeters(center, s) <= radius * 1.05); // 建物の中心が範囲外の場合を除く
     if (method) {
       const mineAll = getAllMine();
-      shops = shops.filter((s) => ['yes', 'some'].includes(statusFor(s, method.id, CHAIN_BY_ID, mineAll)));
+      const mineChains = getAllChainMine();
+      shops = shops.filter((s) => ['yes', 'some'].includes(statusFor(s, method.id, CHAIN_BY_ID, mineAll, mineChains)));
     }
 
     for (const s of shops) {
@@ -218,15 +227,16 @@ async function runSearch(raw, { preferMap = false, center: fixedCenter = null } 
     state.radius = radius;
 
     renderResults();
+    renderMissingHint(center);
     renderMarkers();
     showRange(center);
 
     if (state.shops.length === 0) {
-      setStatus(`半径${formatDistance(radius)}以内に見つかりませんでした。検索ボタン左の範囲を広げるか、「${name} 渋谷」のように地名をつけてみてください。`);
+      setStatus(`${center.origin}半径${formatDistance(radius)}以内に見つかりませんでした。検索ボタン左の範囲を広げるか、「${name} 渋谷」のように地名をつけてみてください。${fallbackNote}`);
     } else {
       const what = method ? `${method.name} が使えそうなお店` : `「${chain?.name ?? name}」`;
       const more = total > state.shops.length ? `（近い順に${state.shops.length}件を表示）` : '（近い順）';
-      setStatus(`${what}：半径${formatDistance(radius)}以内に${total}件${more}${fallbackNote}`);
+      setStatus(`${what}：${center.origin}半径${formatDistance(radius)}以内に${total}件${more}${fallbackNote}`);
     }
     lookupAreas(signal);
   } catch (e) {
@@ -241,10 +251,19 @@ async function runSearch(raw, { preferMap = false, center: fixedCenter = null } 
   }
 }
 
+// その支払い方法が使える（かもしれない）チェーン。自分で「使える」と記録したチェーンも含める
+function chainsAccepting(methodId) {
+  const mineChains = getAllChainMine();
+  return CHAINS.filter((c) => {
+    const st = mineChains[c.id]?.[methodId] ?? c.payments[methodId];
+    return st === 'yes' || st === 'some';
+  });
+}
+
 // 予備の検索。Nominatim は 1 秒に 1 回までなので、チェーンは順番に探す
 async function fallbackSearch({ method, chain, name }, center, radius, signal) {
   if (!method) return nominatimSearch(chain ? chain.osm.names[0] : name, center, radius, { signal });
-  const chains = CHAINS.filter((c) => ['yes', 'some'].includes(c.payments[method.id]));
+  const chains = chainsAccepting(method.id);
   const all = [];
   for (const [i, c] of chains.entries()) {
     if (i > 0) await new Promise((r) => setTimeout(r, 1100));
@@ -255,7 +274,7 @@ async function fallbackSearch({ method, chain, name }, center, radius, signal) {
 
 async function findElementsForMethod(method, center, radius, opts) {
   // 1) 店舗データに支払い方法のタグがある店 と 2) チェーン共通の目安で「使える」チェーンの店 を同時に探す
-  const chains = CHAINS.filter((c) => c.payments[method.id] === 'yes' || c.payments[method.id] === 'some');
+  const chains = chainsAccepting(method.id);
   const [tagged, chained] = await Promise.all([
     searchByPayment(method.id, center, radius, opts),
     chains.length ? searchChains(chains, center, radius, opts) : [],
@@ -359,19 +378,69 @@ function renderChainCard(chain) {
     els.chainCard.innerHTML = '';
     return;
   }
+  const mineChain = getChainMine(chain.id);
+  const merged = mergePayments({ chain: chain.payments, mineChain });
   // カードブランドは「クレジットカード」にまとめ、1 行に並べてコンパクトに
-  const items = ORDERED_METHODS.filter((m) => chain.payments[m.id] && !CARD_BRANDS.includes(m.id));
+  const items = ORDERED_METHODS.filter((m) => merged[m.id] && !CARD_BRANDS.includes(m.id));
+  const editing = state.editingChain === chain.id;
+  const rows = CATEGORIES.map((cat) => {
+    const ms = METHODS.filter((m) => m.cat === cat.id);
+    return `<div class="cat"><h3>${esc(cat.label)}</h3>${ms.map((m) => methodRow(m, merged[m.id], mineChain[m.id], { yes: '使える', no: '使えない' })).join('')}</div>`;
+  }).join('');
   els.chainCard.innerHTML = `
-    <div class="chain-card">
+    <div class="chain-card" data-chain="${esc(chain.id)}">
       <h2>${esc(chain.name)} <span class="src src-chain">チェーン共通の目安</span></h2>
-      <div class="badges">${items.map((m) => badge(m, chain.payments[m.id])).join('')}</div>
+      <div class="badges">${items.map((m) => badge(m, merged[m.id].status)).join('') || '<span class="badge unknown">情報なし</span>'}</div>
       <p class="sub">${chain.note ? esc(chain.note) + ' ' : ''}店舗によって違うことがあるので、下のリストから店舗を選んで確認・記録できます。</p>
+      <details class="more chain-edit"${editing ? ' open' : ''}>
+        <summary>このチェーン全体の情報を自分で直す・追加する</summary>
+        <p class="fine">ここで「使える」にすると、このチェーンの全店舗で <span class="src src-mine">自分</span> として表示されます（この端末に保存）。</p>
+        ${rows}
+      </details>
     </div>`;
 }
 
+// 支払い方法 1 行（詳細シートとチェーン編集で共通）
+function methodRow(m, info, mineStatus, labels = { yes: '使えた', no: '使えず' }) {
+  const src = info ? `<span class="src src-${info.source === 'mineChain' ? 'mine' : info.source}"${info.source === 'mineChain' ? ' title="チェーン全体の自分の記録"' : ''}>${SOURCE_LABEL[info.source]}</span>` : '';
+  return `
+    <div class="method-row" data-method="${m.id}">
+      <div class="m-left">${badge(m, info?.status, { focus: m.id === state.focusMethod })} ${src}</div>
+      ${m.hint ? `<div class="m-hint">${esc(m.hint)}</div>` : ''}
+      <div class="m-vote">
+        <button type="button" class="v-yes" data-vote="yes" aria-pressed="${mineStatus === 'yes'}" aria-label="${esc(m.name)}：${labels.yes}">${labels.yes}</button>
+        <button type="button" class="v-no" data-vote="no" aria-pressed="${mineStatus === 'no'}" aria-label="${esc(m.name)}：${labels.no}">${labels.no}</button>
+      </div>
+    </div>`;
+}
+
+els.chainCard.addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-vote]');
+  const card = e.target.closest('[data-chain]');
+  if (!btn || !card) return;
+  const chain = CHAIN_BY_ID[card.dataset.chain];
+  const methodId = btn.closest('[data-method]')?.dataset.method;
+  if (!chain || !methodId) return;
+  const current = getChainMine(chain.id)[methodId];
+  const next = current === btn.dataset.vote ? null : btn.dataset.vote; // もう一度押すと取り消し
+  if (!setChainMine(chain.id, methodId, next)) {
+    setStatus('記録を保存できませんでした（プライベートブラウズでは保存できないことがあります）', { error: true });
+  }
+  state.editingChain = chain.id;
+  const y = window.scrollY;
+  renderChainCard(chain);
+  window.scrollTo(0, y);
+  renderResults();
+});
+
 function shopMerged(shop) {
   const chain = shop.chainId ? CHAIN_BY_ID[shop.chainId] : null;
-  return mergePayments({ chain: chain?.payments ?? {}, osm: shop.osmPayments, mine: getMine(shop.key) });
+  return mergePayments({
+    chain: chain?.payments ?? {},
+    osm: shop.osmPayments,
+    mine: getMine(shop.key),
+    mineChain: chain ? getChainMine(chain.id) : {},
+  });
 }
 
 function renderResults() {
@@ -407,6 +476,14 @@ function renderResults() {
         </button>
       </li>`;
   }).join('');
+}
+
+// 近くにあるはずのお店が出ないときの案内（地図データに未登録の可能性）
+function renderMissingHint(center) {
+  const url = `https://www.openstreetmap.org/#map=17/${center.lat.toFixed(5)}/${center.lon.toFixed(5)}`;
+  els.missing.innerHTML = `近くにあるはずのお店が出ないときは、地図データ（OpenStreetMap）に登録されていない可能性があります。
+    <a href="${esc(url)}" target="_blank" rel="noopener">この周辺の地図データを見る</a>（誰でも無料で店舗を追加できます）`;
+  els.missing.hidden = false;
 }
 
 function renderMarkers() {
@@ -468,19 +545,7 @@ function renderDetail(shop) {
   }
   els.detailNote.innerHTML = notes.map((n) => `<div class="note">${n}</div>`).join('');
 
-  const row = (m) => {
-    const info = merged[m.id];
-    const src = info ? `<span class="src src-${info.source}">${SOURCE_LABEL[info.source]}</span>` : '';
-    return `
-      <div class="method-row" data-method="${m.id}">
-        <div class="m-left">${badge(m, info?.status, { focus: m.id === state.focusMethod })} ${src}</div>
-        ${m.hint ? `<div class="m-hint">${esc(m.hint)}</div>` : ''}
-        <div class="m-vote">
-          <button type="button" class="v-yes" data-vote="yes" aria-pressed="${mine[m.id] === 'yes'}" aria-label="${esc(m.name)}が使えた">使えた</button>
-          <button type="button" class="v-no" data-vote="no" aria-pressed="${mine[m.id] === 'no'}" aria-label="${esc(m.name)}は使えなかった">使えず</button>
-        </div>
-      </div>`;
-  };
+  const row = (m) => methodRow(m, merged[m.id], mine[m.id]);
 
   const known = (cat) => METHODS.filter((m) => m.cat === cat.id && merged[m.id]);
   const unknown = (cat) => METHODS.filter((m) => m.cat === cat.id && !merged[m.id]);

@@ -11,7 +11,7 @@ export const CATEGORIES = [
   { id: 'cash', label: '現金' },
 ];
 
-export const SOURCE_LABEL = { mine: '自分', osm: '店舗', chain: '目安' };
+export const SOURCE_LABEL = { mine: '自分', osm: '店舗', mineChain: '自分', chain: '目安' };
 
 export const METHODS = [
   { id: 'cash', name: '現金', cat: 'cash', osm: ['cash', 'coins', 'notes'], words: ['現金'] },

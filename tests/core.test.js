@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  areaFromAddress, areaFromGsi, detectChainId, extractStations, findChain, findMethod, isGenericName, isStation,
+  matchesChainKind, areaFromAddress, areaFromGsi, detectChainId, extractStations, findChain, findMethod, isGenericName, isStation,
   mergePayments, namePatternFor, nearestStation, normalize, parseOsmPayments, parseQuery, pickName,
   statusFor, toShop,
 } from '../js/core.js';
@@ -215,18 +215,19 @@ test('Overpass クエリ：チェーンは完全一致（速い）で探し、�
   assert.match(q, /\["brand"="Starbucks"\]/);
   // 正規表現は、業種の完全一致で絞り込んだ後にだけ使う（重くならないように）
   for (const line of q.split('\n').filter((l) => l.includes('~'))) {
-    assert.match(line, /^  nwr\["(amenity|shop)"="[a-z_]+"\]\(around:/, line);
+    assert.match(line, /^  nwr\[("amenity"="[a-z_]+"|"shop")\]\(around:/, line);
   }
   // 店名に店舗名まで入っていて、ブランドの目印がない店舗も拾える
   assert.match(q, /\["amenity"="cafe"\]\(around:2000,35,139\)\["name"~"スターバックス\|Starbucks",i\]/);
   const seven = buildChainQuery([CHAIN_BY_ID.seven], { lat: 35, lon: 139 }, 2000);
-  assert.match(seven, /\["shop"="convenience"\]\(around:2000,35,139\)\["name"~/);
+  // コンビニは shop の値を問わない（shop=yes で登録された店舗も拾う）
+  assert.match(seven, /nwr\["shop"\]\(around:2000,35,139\)\["name"~/);
   for (const n of ['セブン-イレブン 渋谷道玄坂店', 'セブンイレブン新宿店', 'セブン－イレブン', '7-ELEVEN']) {
     assert.match(n, new RegExp(CHAIN_BY_ID.seven.pattern, 'i'), n);
   }
   // 複数チェーンでも、同じ業種の条件は 1 行にまとめる
   const multi = buildChainQuery([CHAIN_BY_ID.seven, CHAIN_BY_ID.lawson], { lat: 35, lon: 139 }, 1000);
-  assert.equal(multi.split('\n').filter((l) => l.includes('"shop"="convenience"')).length, 1);
+  assert.equal(multi.split('\n').filter((l) => l.startsWith('  nwr["shop"](')).length, 1);
   const m = buildChainQuery([CHAIN_BY_ID.mcdonalds, CHAIN_BY_ID.lawson], { lat: 35, lon: 139 }, 1000);
   assert.match(m, /"McDonald's"/);
   assert.match(m, /Q11323850/); // ナチュラルローソン
@@ -238,5 +239,35 @@ test('チェーンデータ：検索用の条件（osm）がそろっている',
   for (const c of CHAINS) {
     assert.ok(c.osm?.wikidata?.every((id) => /^Q\d+$/.test(id)), `${c.id}: wikidata`);
     assert.ok(c.osm?.names?.length, `${c.id}: names`);
+  }
+});
+
+test('matchesChainKind: 目印つきなら業種を問わず、コンビニは shop の値を問わない', () => {
+  const seven = CHAIN_BY_ID.seven;
+  assert.equal(matchesChainKind({ name: 'セブン-イレブン 渋谷店', shop: 'yes' }, seven), true);
+  assert.equal(matchesChainKind({ name: 'セブン-イレブン前', highway: 'bus_stop' }, seven), false);
+  assert.equal(matchesChainKind({ 'brand:wikidata': 'Q259340', building: 'retail' }, seven), true);
+  assert.equal(matchesChainKind({ name: '松屋', shop: 'department_store' }, CHAIN_BY_ID.matsuya), false);
+  const shop = toShop({ type: 'node', id: 20, lat: 35, lon: 139, tags: { name: 'セブン-イレブン 渋谷店', shop: 'yes' } }, seven);
+  assert.equal(shop?.chainId, 'seven');
+});
+
+test('チェーン全体の自分の記録：目安より優先、店舗ごとの情報よりは後', () => {
+  const merged = mergePayments({
+    chain: { smartcode: 'some', paypay: 'yes' },
+    mineChain: { smartcode: 'yes', waon: 'no' },
+    osm: { waon: 'yes' },
+  });
+  assert.deepEqual(merged.smartcode, { status: 'yes', source: 'mineChain' });
+  assert.deepEqual(merged.waon, { status: 'yes', source: 'osm' });
+  assert.deepEqual(merged.paypay, { status: 'yes', source: 'chain' });
+  const gusto = { key: 'node/1', chainId: 'gusto', osmPayments: {} };
+  assert.equal(statusFor(gusto, 'smartcode', CHAIN_BY_ID), null);
+  assert.equal(statusFor(gusto, 'smartcode', CHAIN_BY_ID, {}, { gusto: { smartcode: 'yes' } }), 'yes');
+});
+
+test('追加したチェーンも略称で見つかる', () => {
+  for (const [q, id] of [['ガスト', 'gusto'], ['サイゼ', 'saizeriya'], ['ケンタ', 'kfc'], ['ココイチ', 'cocoichi'], ['はま寿司', 'hamasushi']]) {
+    assert.equal(findChain(q)?.id, id, q);
   }
 });
