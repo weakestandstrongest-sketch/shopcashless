@@ -1,8 +1,8 @@
 // OpenStreetMap のデータを取得する（APIキー不要）。
 // Overpass API: 店舗の検索 / Nominatim: 地名 → 座標
 
-import { METHOD_BY_ID } from './payments.js';
-import { namePatternFor } from './core.js';
+import { METHOD_BY_ID } from './payments.js?v=3';
+import { namePatternFor } from './core.js?v=3';
 
 const OVERPASS_ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',
@@ -81,7 +81,17 @@ export async function geocode(area, { signal } = {}) {
   return { lat: Number(hit.lat), lon: Number(hit.lon), label: hit.display_name };
 }
 
-// 座標 → 住所（町名）。Nominatim の利用規約に合わせ、呼び出し側で 1 秒に 1 回までにすること
+// 座標 → 町名。国土地理院の逆ジオコーダー（無料・キー不要・日本国内向け）
+// 返り値の例：{ muniCd: '13113', lv01Nm: '宇田川町' }
+export async function gsiReverse({ lat, lon }, { signal } = {}) {
+  const url = `https://mreversegeocoder.gsi.go.jp/reverse-geocoder/LonLatToAddress?lat=${lat}&lon=${lon}`;
+  const res = await fetch(url, { signal });
+  if (!res.ok) throw new Error(`住所の取得に失敗しました（HTTP ${res.status}）`);
+  const json = await res.json();
+  return json.results ?? null;
+}
+
+// 座標 → 住所（予備）。Nominatim の利用規約に合わせ、呼び出し側で 1 秒に 1 回までにすること
 export async function reverseGeocode({ lat, lon }, { signal } = {}) {
   const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=17&accept-language=ja&lat=${lat}&lon=${lon}`;
   const res = await fetch(url, { signal, headers: { Accept: 'application/json' } });

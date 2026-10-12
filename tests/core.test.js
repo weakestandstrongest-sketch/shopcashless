@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  areaFromAddress, detectChainId, extractStations, findChain, findMethod, isGenericName, isStation,
+  areaFromAddress, areaFromGsi, detectChainId, extractStations, findChain, findMethod, isGenericName, isStation,
   mergePayments, namePatternFor, nearestStation, normalize, parseOsmPayments, parseQuery, pickName,
   statusFor, toShop,
 } from '../js/core.js';
@@ -198,4 +198,10 @@ test('Overpass クエリ：駅もいっしょに取得し、座標つきで出�
   assert.match(q, /\.shops out body center/);
   assert.match(q, /around\.shops:1200\)\["railway"="station"\]/);
   assert.doesNotMatch(q, /out center tags/);
+});
+
+test('areaFromGsi: 国土地理院の結果から町名を取り出す', () => {
+  assert.equal(areaFromGsi({ muniCd: '13113', lv01Nm: '宇田川町' }), '宇田川町');
+  assert.equal(areaFromGsi({ muniCd: '13113', lv01Nm: '－' }), '');
+  assert.equal(areaFromGsi(null), '');
 });

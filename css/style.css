@@ -203,6 +203,7 @@ a { color: var(--accent); }
 .intro li { margin: 4px 0; }
 
 .fine { font-size: 12px; color: var(--muted); }
+.version { text-align: center; margin-top: 16px; }
 
 /* チェーン共通カード */
 .chain-card {

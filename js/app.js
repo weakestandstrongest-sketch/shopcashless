@@ -1,17 +1,17 @@
-import { CATEGORIES, METHODS, METHOD_BY_ID, SOURCE_LABEL, STATUS } from './payments.js';
-import { CHAINS, CHAIN_BY_ID } from './chains.js';
+import { CATEGORIES, METHODS, METHOD_BY_ID, SOURCE_LABEL, STATUS } from './payments.js?v=3';
+import { CHAINS, CHAIN_BY_ID } from './chains.js?v=3';
 import {
-  appleMapsUrl, areaFromAddress, dedupeShops, distanceMeters, extractStations, formatDistance, googleMapsUrl,
+  appleMapsUrl, areaFromAddress, areaFromGsi, dedupeShops, distanceMeters, extractStations, formatDistance, googleMapsUrl,
   isStation, mergePayments, nearestStation, osmUrl, parseQuery, statusFor, toShop,
-} from './core.js';
-import { geocode, reverseGeocode, searchByName, searchByPayment } from './overpass.js';
-import { getAllMine, getMine, setMine } from './storage.js';
+} from './core.js?v=3';
+import { geocode, gsiReverse, reverseGeocode, searchByName, searchByPayment } from './overpass.js?v=3';
+import { getAllMine, getMine, setMine } from './storage.js?v=3';
 
 const DEFAULT_CENTER = { lat: 35.681236, lon: 139.767125 }; // 東京駅
 const MAX_RESULTS = 80;
 const RADIUS_KEY = 'shopcashless:radius';
-const AREA_CACHE_KEY = 'shopcashless:areas:v1';
-const AREA_LOOKUPS = 12; // 店舗名が無い店舗のうち、住所（町名）を調べる件数
+const AREA_CACHE_KEY = 'shopcashless:areas:v2';
+const NOMINATIM_LOOKUPS = 20; // 国土地理院で町名がわからなかったときに、予備で調べる件数
 const CARD_BRANDS = ['visa', 'mastercard', 'jcb', 'amex', 'diners'];
 const ORDERED_METHODS = CATEGORIES.flatMap((cat) => METHODS.filter((m) => m.cat === cat.id));
 
@@ -196,7 +196,7 @@ async function runSearch(raw, { preferMap = false, center: fixedCenter = null } 
 
     renderResults();
     renderMarkers();
-    fitToResults(center);
+    showRange(center);
 
     if (state.shops.length === 0) {
       setStatus(`半径${formatDistance(radius)}以内に見つかりませんでした。検索ボタン左の範囲を広げるか、「${name} 渋谷」のように地名をつけてみてください。`);
@@ -224,36 +224,65 @@ async function findElementsForMethod(method, center, radius, signal) {
   return [...tagged, ...chained];
 }
 
-// 店舗名が登録されていない店舗は、町名を調べて「どこの店舗か」わかるようにする。
-// Nominatim の利用規約（1秒に1回まで）に合わせて順番に問い合わせ、結果は端末に保存して再利用する
+// 住所が登録されていない店舗は、座標から町名を調べて「どこの店舗か」わかるようにする。
+// 1) 国土地理院の逆ジオコーダー（速いので 4 件ずつ並行）
+// 2) それでもわからなければ Nominatim（利用規約に合わせて 1 秒に 1 回）
+// 結果は端末に保存して、次回からはすぐ表示する
 function readAreaCache() {
   try { return JSON.parse(localStorage.getItem(AREA_CACHE_KEY) || '{}') || {}; } catch { return {}; }
+}
+
+function writeAreaCache(cache) {
+  try { localStorage.setItem(AREA_CACHE_KEY, JSON.stringify(cache)); } catch { /* 保存できなくても表示はする */ }
 }
 
 async function lookupAreas(signal) {
   const cache = readAreaCache();
   const keyOf = (s) => `${s.lat.toFixed(4)},${s.lon.toFixed(4)}`;
-  const targets = state.shops.filter((s) => s.noBranchName && !s.addr).slice(0, AREA_LOOKUPS);
-  let changed = false;
-  for (const s of targets) {
-    if (cache[keyOf(s)] !== undefined) { s.area = cache[keyOf(s)]; changed = true; }
-  }
-  if (changed) refreshList();
-  for (const s of targets) {
+  const targets = state.shops.filter((s) => !s.addr);
+  for (const s of targets) if (cache[keyOf(s)]) s.area = cache[keyOf(s)];
+  const pending = targets.filter((s) => !s.area);
+  for (const s of pending) s.areaLoading = true;
+  refreshList();
+
+  const done = (s, area) => {
+    s.areaLoading = false;
+    if (area) {
+      s.area = area;
+      cache[keyOf(s)] = area;
+    }
+  };
+
+  for (let i = 0; i < pending.length; i += 4) {
+    const batch = pending.slice(i, i + 4);
+    const results = await Promise.allSettled(batch.map((s) => gsiReverse(s, { signal })));
     if (signal.aborted) return;
-    if (cache[keyOf(s)] !== undefined) continue;
+    results.forEach((r, j) => {
+      if (r.status === 'fulfilled') batch[j].area = areaFromGsi(r.value) || undefined;
+    });
+    writeAreaCache(Object.assign(cache, Object.fromEntries(batch.filter((s) => s.area).map((s) => [keyOf(s), s.area]))));
+    for (const s of batch) if (s.area) s.areaLoading = false;
+    refreshList();
+    if (results.every((r) => r.status === 'rejected')) break; // 国土地理院に接続できない場合は予備へ
+  }
+
+  const rest = pending.filter((s) => !s.area);
+  for (const s of rest.slice(NOMINATIM_LOOKUPS)) s.areaLoading = false;
+  for (const s of rest.slice(0, NOMINATIM_LOOKUPS)) {
+    if (signal.aborted) return;
     try {
-      const address = await reverseGeocode(s, { signal });
-      s.area = areaFromAddress(address ?? {});
-      cache[keyOf(s)] = s.area;
-      try { localStorage.setItem(AREA_CACHE_KEY, JSON.stringify(cache)); } catch { /* 保存できなくても表示はする */ }
-      refreshList();
+      done(s, areaFromAddress((await reverseGeocode(s, { signal })) ?? {}));
     } catch (e) {
       if (e.name === 'AbortError') return;
-      return; // 混雑などで失敗したら、駅からの距離だけで表示する
+      for (const x of rest) x.areaLoading = false; // 混雑などで失敗したら、駅からの距離だけで表示する
+      refreshList();
+      return;
     }
+    writeAreaCache(cache);
+    refreshList();
     await new Promise((r) => setTimeout(r, 1100));
   }
+  refreshList();
 }
 
 function refreshList() {
@@ -271,23 +300,18 @@ function refreshList() {
 function whereText(s) {
   return [
     s.station ? `${s.station.name} 徒歩${s.station.walkMinutes}分` : '',
-    s.addr || s.area || '',
+    s.addr || s.area || (s.areaLoading ? '町名を確認中…' : ''),
   ].filter(Boolean).join(' ・ ');
 }
 
-function fitToResults(center) {
-  // 検索した範囲を円で表示し、近い店舗が見えるように地図を合わせる
+function showRange(center) {
+  // 検索した範囲を円で表示する
   if (rangeCircle) rangeCircle.remove();
   rangeCircle = L.circle([center.lat, center.lon], {
     radius: state.radius, color: '#0b7a5c', weight: 1.5, dashArray: '6 6', fillOpacity: 0.04, interactive: false,
   }).addTo(map);
-  const pts = state.shops.slice(0, 15).map((s) => [s.lat, s.lon]);
-  if (pts.length === 0) {
-    map.fitBounds(rangeCircle.getBounds(), { padding: [10, 10] });
-    return;
-  }
-  pts.push([center.lat, center.lon]);
-  map.fitBounds(pts, { padding: [30, 30], maxZoom: 17 });
+  // 選んだ範囲（円）全体が見えるように地図を合わせる
+  map.fitBounds(rangeCircle.getBounds(), { padding: [8, 8] });
 }
 
 // ---------- 描画 ----------
@@ -509,6 +533,10 @@ const header = document.querySelector('.topbar');
 const syncHeader = () => document.documentElement.style.setProperty('--header-h', `${header.offsetHeight}px`);
 new ResizeObserver(syncHeader).observe(header);
 syncHeader();
+
+// バージョン表示（古い版が表示されていないか確認できるように）
+const ver = $('#app-version');
+if (ver) ver.textContent = new URL(import.meta.url).searchParams.get('v') ?? '';
 
 // URL の ?q=マック で直接検索できるようにする（ブックマーク・共有用）
 const initial = new URLSearchParams(location.search).get('q');

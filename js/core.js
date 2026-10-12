@@ -1,7 +1,7 @@
 // DOM に依存しないロジック（テスト対象）。
 
-import { METHODS, METHOD_ID_BY_OSM_KEY } from './payments.js';
-import { CHAINS, CHAIN_BY_ID } from './chains.js';
+import { METHODS, METHOD_ID_BY_OSM_KEY } from './payments.js?v=3';
+import { CHAINS, CHAIN_BY_ID } from './chains.js?v=3';
 
 // 入力のゆれを吸収する：全角/半角・大文字小文字・ひらがな/カタカナ・空白や記号
 export function normalize(text) {
@@ -214,6 +214,12 @@ export function nearestStation(point, stations, maxMeters = 1200) {
   }
   if (!best) return null;
   return { ...best, walkMinutes: Math.max(1, Math.ceil(best.distance / 80)) };
+}
+
+// 国土地理院の逆ジオコーダーの結果 → 町名（「宇田川町」「道玄坂二丁目」など）。不明なら ''
+export function areaFromGsi(results) {
+  const town = String(results?.lv01Nm ?? '').trim();
+  return town && !/^[-－ー―]+$/.test(town) ? town : '';
 }
 
 // Nominatim の逆ジオコーディング結果 → 「渋谷区宇田川町」のような町名
