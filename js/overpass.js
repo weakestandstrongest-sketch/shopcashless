@@ -6,8 +6,8 @@
 // - 正規表現を使うのは、チェーン以外の店名で探すときだけ
 // - 店舗かどうか（shop / amenity …）の判定はサーバーではなく、受け取ってから行う
 
-import { METHOD_BY_ID } from './payments.js?v=4';
-import { namePatternFor } from './core.js?v=4';
+import { METHOD_BY_ID } from './payments.js?v=5';
+import { namePatternFor } from './core.js?v=5';
 
 const OVERPASS_ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',
@@ -66,17 +66,19 @@ export function buildPaymentQuery(methodId, { lat, lon }, radius, limit = 400) {
 }
 
 export class SearchError extends Error {
-  constructor(kind, message) {
+  constructor(kind, message, detail = '') {
     super(message);
-    this.kind = kind; // 'busy'（混雑・時間切れ） | 'offline'（通信できない）
+    this.kind = kind; // 'busy'（混雑・時間切れ） | 'blocked'（応答が受け取れない） | 'offline'（端末がオフライン）
+    this.detail = detail; // サーバーごとの失敗理由（問い合わせの手がかり用）
   }
 }
 
 async function postOverpass(query, signal, onRetry) {
-  let busy = false;
+  const failures = [];
   for (const [i, url] of OVERPASS_ENDPOINTS.entries()) {
     if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
     if (i > 0) onRetry?.(i);
+    const host = new URL(url).host;
     // 1 台あたり最大 20 秒。応答がなければ次のサーバーへ
     const attempt = new AbortController();
     const timer = setTimeout(() => attempt.abort(), ATTEMPT_TIMEOUT_MS);
@@ -85,26 +87,32 @@ async function postOverpass(query, signal, onRetry) {
     try {
       const res = await fetch(url, { method: 'POST', body: new URLSearchParams({ data: query }), signal: attempt.signal });
       if (!res.ok) {
-        busy = true; // 429（混雑）・504（時間切れ）など
+        failures.push(`${host}: HTTP ${res.status}`); // 429（混雑）・504（時間切れ）など
         continue;
       }
       const json = await res.json();
       if (json.remark && /timed out|out of memory/i.test(json.remark) && !json.elements?.length) {
-        busy = true;
+        failures.push(`${host}: 時間切れ`);
         continue;
       }
       return json.elements ?? [];
     } catch (e) {
       if (signal?.aborted) throw e; // 新しい検索が始まった
-      if (attempt.signal.aborted) busy = true; // 20 秒で応答なし
+      // 混雑時のエラー応答は、ブラウザには「読み込み失敗」としか見えないことがある
+      failures.push(`${host}: ${attempt.signal.aborted ? '20秒で応答なし' : `応答を受け取れず（${e.message}）`}`);
     } finally {
       clearTimeout(timer);
       signal?.removeEventListener('abort', stop);
     }
   }
+  const detail = failures.join(' / ');
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    throw new SearchError('offline', 'この端末がインターネットに接続されていないようです', detail);
+  }
+  const busy = failures.some((f) => /HTTP|時間切れ|応答なし/.test(f));
   throw busy
-    ? new SearchError('busy', '地図データのサーバーが混み合っています。少し待ってからもう一度検索するか、範囲を狭めてお試しください')
-    : new SearchError('offline', '地図データのサーバーに接続できませんでした。通信状態を確認して、もう一度お試しください');
+    ? new SearchError('busy', '地図データのサーバーが混み合っています', detail)
+    : new SearchError('blocked', '地図データのサーバーから応答を受け取れませんでした', detail);
 }
 
 export function searchChains(chains, center, radius, { signal, onRetry } = {}) {
@@ -117,6 +125,26 @@ export function searchByName(name, center, radius, { signal, onRetry } = {}) {
 
 export function searchByPayment(methodId, center, radius, { signal, onRetry } = {}) {
   return postOverpass(buildPaymentQuery(methodId, center, radius), signal, onRetry);
+}
+
+// 予備の店舗検索：Overpass が使えないときに Nominatim で店名を探す（最大 40 件・駅の情報なし）。
+// 結果は Overpass と同じ形に変換して返す
+export async function nominatimSearch(term, { lat, lon }, radius, { signal } = {}) {
+  const dLat = radius / 111320;
+  const dLon = radius / (111320 * Math.cos((lat * Math.PI) / 180));
+  const viewbox = [lon - dLon, lat + dLat, lon + dLon, lat - dLat].map((n) => n.toFixed(5)).join(',');
+  const url = 'https://nominatim.openstreetmap.org/search?format=jsonv2&limit=40&countrycodes=jp'
+    + `&extratags=1&namedetails=1&accept-language=ja&bounded=1&viewbox=${viewbox}&q=${encodeURIComponent(term)}`;
+  const res = await fetch(url, { signal, headers: { Accept: 'application/json' } });
+  if (!res.ok) throw new Error(`予備の検索に失敗しました（HTTP ${res.status}）`);
+  const hits = await res.json();
+  return hits.map((h) => ({
+    type: h.osm_type,
+    id: h.osm_id,
+    lat: Number(h.lat),
+    lon: Number(h.lon),
+    tags: { ...(h.extratags ?? {}), ...(h.namedetails ?? {}), [h.category]: h.type },
+  }));
 }
 
 // 地名 → 座標（日本国内に限定）

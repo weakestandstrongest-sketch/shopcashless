@@ -1,7 +1,7 @@
 // DOM に依存しないロジック（テスト対象）。
 
-import { METHODS, METHOD_ID_BY_OSM_KEY } from './payments.js?v=4';
-import { CHAINS, CHAIN_BY_ID } from './chains.js?v=4';
+import { METHODS, METHOD_ID_BY_OSM_KEY } from './payments.js?v=5';
+import { CHAINS, CHAIN_BY_ID } from './chains.js?v=5';
 
 // 入力のゆれを吸収する：全角/半角・大文字小文字・ひらがな/カタカナ・空白や記号
 export function normalize(text) {

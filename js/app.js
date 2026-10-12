@@ -1,11 +1,13 @@
-import { CATEGORIES, METHODS, METHOD_BY_ID, SOURCE_LABEL, STATUS } from './payments.js?v=4';
-import { CHAINS, CHAIN_BY_ID } from './chains.js?v=4';
+import { CATEGORIES, METHODS, METHOD_BY_ID, SOURCE_LABEL, STATUS } from './payments.js?v=5';
+import { CHAINS, CHAIN_BY_ID } from './chains.js?v=5';
 import {
   appleMapsUrl, areaFromAddress, areaFromGsi, dedupeShops, distanceMeters, extractStations, formatDistance, googleMapsUrl,
   isStation, mergePayments, nearestStation, osmUrl, parseQuery, statusFor, toShop,
-} from './core.js?v=4';
-import { geocode, gsiReverse, reverseGeocode, searchByName, searchByPayment, searchChains } from './overpass.js?v=4';
-import { getAllMine, getMine, setMine } from './storage.js?v=4';
+} from './core.js?v=5';
+import {
+  geocode, gsiReverse, nominatimSearch, reverseGeocode, searchByName, searchByPayment, searchChains, SearchError,
+} from './overpass.js?v=5';
+import { getAllMine, getMine, setMine } from './storage.js?v=5';
 
 const DEFAULT_CENTER = { lat: 35.681236, lon: 139.767125 }; // 東京駅
 const MAX_RESULTS = 80;
@@ -177,10 +179,23 @@ async function runSearch(raw, { preferMap = false, center: fixedCenter = null } 
     const ticker = setInterval(tick, 1000);
     const opts = { signal, onRetry: () => { retryNote = ' 混雑のため別のサーバーで再試行中'; tick(); } };
     let elements = [];
+    let fallbackNote = '';
     try {
       if (method) elements = await findElementsForMethod(method, center, radius, opts);
       else if (chain) elements = await searchChains([chain], center, radius, opts);
       else elements = await searchByName(name, center, radius, opts);
+    } catch (e) {
+      if (!(e instanceof SearchError) || e.kind === 'offline') throw e;
+      // 地図データのサーバー（Overpass）が使えないときは、予備の検索（Nominatim）で探す
+      retryNote = ' 予備の方法で検索中';
+      tick();
+      try {
+        elements = await fallbackSearch({ method, chain, name }, center, radius, signal);
+      } catch (e2) {
+        if (e2.name === 'AbortError') throw e2;
+        throw e; // 予備もだめなら、元の失敗理由を表示する
+      }
+      fallbackNote = ' ※地図サーバーが混雑しているため予備の方法で検索しました（最大40件・駅の目印なし）';
     } finally {
       clearInterval(ticker);
     }
@@ -211,14 +226,31 @@ async function runSearch(raw, { preferMap = false, center: fixedCenter = null } 
     } else {
       const what = method ? `${method.name} が使えそうなお店` : `「${chain?.name ?? name}」`;
       const more = total > state.shops.length ? `（近い順に${state.shops.length}件を表示）` : '（近い順）';
-      setStatus(`${what}：半径${formatDistance(radius)}以内に${total}件${more}`);
+      setStatus(`${what}：半径${formatDistance(radius)}以内に${total}件${more}${fallbackNote}`);
     }
     lookupAreas(signal);
   } catch (e) {
     if (e.name === 'AbortError') return;
     console.error(e);
-    setStatus(e.kind ? `${e.message}。` : `検索に失敗しました（${e.message}）。もう一度お試しください。`, { error: true });
+    if (e instanceof SearchError) {
+      const hint = e.kind === 'offline' ? '接続を確認して' : '少し時間をおいてから';
+      setStatus(`${e.message}。${hint}もう一度お試しください。\n（詳細：${e.detail}）`, { error: true });
+    } else {
+      setStatus(`検索に失敗しました（${e.message}）。もう一度お試しください。`, { error: true });
+    }
   }
+}
+
+// 予備の検索。Nominatim は 1 秒に 1 回までなので、チェーンは順番に探す
+async function fallbackSearch({ method, chain, name }, center, radius, signal) {
+  if (!method) return nominatimSearch(chain ? chain.osm.names[0] : name, center, radius, { signal });
+  const chains = CHAINS.filter((c) => ['yes', 'some'].includes(c.payments[method.id]));
+  const all = [];
+  for (const [i, c] of chains.entries()) {
+    if (i > 0) await new Promise((r) => setTimeout(r, 1100));
+    all.push(...await nominatimSearch(c.osm.names[0], center, radius, { signal }));
+  }
+  return all;
 }
 
 async function findElementsForMethod(method, center, radius, opts) {
